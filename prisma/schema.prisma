@@ -1,0 +1,223 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  VIEWER
+}
+
+model User {
+  id          String       @id(map: "AuthUser_pkey") @default(cuid())
+  name        String?
+  email       String       @unique(map: "AuthUser_email_key")
+  passwordHash String?
+  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(6)
+  memberships Membership[]
+  apiKeys     ApiKey[]
+  events      Event[]      @relation("EventActor")
+  @@map("AuthUser")
+  sentInvitations Invitation[] @relation("InvitationSender")
+}
+
+model Tenant {
+  id          String       @id @default(cuid())
+  name        String
+  slug        String       @unique
+  suspendedAt DateTime?    @db.Timestamptz(6)
+  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(6)
+  memberships Membership[]
+  apiKeys     ApiKey[]
+  events      Event[]
+  ingestionRequests EventIngestionRequest[]
+  invitations Invitation[]
+  hourlyRollups      TenantHourlyRollup[]
+dailyRollups       TenantDailyRollup[]
+eventHourlyRollups EventHourlyRollup[]
+eventDailyRollups  EventDailyRollup[]
+}
+
+model Membership {
+  id        String         @id @default(cuid())
+  userId    String
+  tenantId  String
+  role      MembershipRole @default(VIEWER)
+  createdAt DateTime       @default(now()) @db.Timestamptz(6)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId])
+  @@index([tenantId])
+}
+
+model Invitation {
+  id          String         @id @default(cuid())
+  tenantId    String
+  email       String
+  role        MembershipRole @default(VIEWER)
+  tokenHash   String         @unique
+  invitedById String
+  expiresAt   DateTime       @db.Timestamptz(6)
+  acceptedAt  DateTime?      @db.Timestamptz(6)
+  createdAt   DateTime       @default(now()) @db.Timestamptz(6)
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invitedBy User   @relation("InvitationSender", fields: [invitedById], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, email])
+  @@index([expiresAt])
+}
+
+
+model ApiKey {
+  id            String    @id @default(cuid())
+  tenantId      String
+  createdById   String
+  name          String
+  keyHash       String    @unique
+  keyLookupHash String?   @unique
+  lastUsedAt    DateTime? @db.Timestamptz(6)
+  revokedAt     DateTime? @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy     User      @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  events        Event[]
+  rateLimit ApiKeyRateLimit?
+
+  @@index([tenantId])
+}
+
+
+model Event {
+  id          BigInt    @id @default(autoincrement())
+  tenantId    String
+  apiKeyId    String?
+  userId      String?
+  eventName   String
+  distinctId  String
+  properties  Json      @default("{}")
+  occurredAt  DateTime  @db.Timestamptz(6)
+  receivedAt  DateTime  @default(now()) @db.Timestamptz(6)
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  apiKey      ApiKey?   @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  user        User?     @relation("EventActor", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, occurredAt])
+  @@index([tenantId, eventName, occurredAt])
+  @@index([tenantId, distinctId, occurredAt])
+}
+
+model EventIngestionRequest {
+  id                 String   @id @default(cuid())
+  tenantId           String
+  idempotencyKeyHash String
+  expiresAt          DateTime @db.Timestamptz(6)
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, idempotencyKeyHash])
+  @@index([expiresAt])
+}
+
+
+model ApiKeyRateLimit {
+  apiKeyId     String   @id
+  tokens       Float    @default(100)
+  lastRefillAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(6)
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@map("ApiKeyRateLimit")
+}
+
+model TenantHourlyRollup {
+  tenantId    String
+  bucketStart DateTime @db.Timestamptz(6)
+  eventCount  BigInt   @default(0)
+  uniqueUsers BigInt   @default(0)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, bucketStart])
+  @@map("TenantHourlyRollup")
+}
+
+model TenantDailyRollup {
+  tenantId    String
+  bucketStart DateTime @db.Timestamptz(6)
+  eventCount  BigInt   @default(0)
+  uniqueUsers BigInt   @default(0)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, bucketStart])
+  @@map("TenantDailyRollup")
+}
+
+model EventHourlyRollup {
+  tenantId    String
+  bucketStart DateTime @db.Timestamptz(6)
+  eventName   String
+  eventCount  BigInt   @default(0)
+  uniqueUsers BigInt   @default(0)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, bucketStart, eventName])
+  @@index([tenantId, eventName, bucketStart])
+  @@map("EventHourlyRollup")
+}
+
+model EventDailyRollup {
+  tenantId    String
+  bucketStart DateTime @db.Timestamptz(6)
+  eventName   String
+  eventCount  BigInt   @default(0)
+  uniqueUsers BigInt   @default(0)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, bucketStart, eventName])
+  @@index([tenantId, eventName, bucketStart])
+  @@map("EventDailyRollup")
+}
+
+model Post {
+  authorId  Int
+  content   String?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  id        Int      @id @default(autoincrement())
+  title     String
+  updatedAt DateTime @db.Timestamptz(6)
+  User      LegacyUser @relation(fields: [authorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([authorId], map: "Post_authorId_idx_e47547ed")
+}
+
+model LegacyUser {
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  email     String   @unique
+  id        Int      @id @default(autoincrement())
+  name      String?
+  updatedAt DateTime @db.Timestamptz(6)
+  username  String?
+  Post      Post[]
+
+  @@map("User")
+}

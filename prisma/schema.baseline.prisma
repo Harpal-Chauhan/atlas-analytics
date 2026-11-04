@@ -1,0 +1,31 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Post {
+  authorId  Int
+  content   String?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  id        Int      @id @default(autoincrement())
+  title     String
+  updatedAt DateTime @db.Timestamptz(6)
+  User      User     @relation(fields: [authorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([authorId], map: "Post_authorId_idx_e47547ed")
+}
+
+model User {
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  email     String   @unique
+  id        Int      @id @default(autoincrement())
+  name      String?
+  updatedAt DateTime @db.Timestamptz(6)
+  username  String?
+  Post      Post[]
+}
