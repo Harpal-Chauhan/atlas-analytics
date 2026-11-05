@@ -1,0 +1,44 @@
+
+name: Process Analytics Rollups
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-rollups
+  cancel-in-progress: false
+
+jobs:
+  process-rollups:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Process hourly and daily rollups
+        run: npm run rollups
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          APP_DATABASE_URL: ${{ secrets.APP_DATABASE_URL }}

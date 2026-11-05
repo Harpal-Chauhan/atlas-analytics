@@ -219,7 +219,7 @@ describe("PostgreSQL tenant isolation", () => {
                 });
             }
         }
-    });
+    }, 15000);
 
     it("does not expose Tenant B rollups in Tenant A context", async () => {
         const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -361,4 +361,347 @@ describe("PostgreSQL tenant isolation", () => {
             }
         }
     });
+
+    it("does not expose Tenant B records across remaining tenant-scoped tables", async () => {
+        const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+        let tenantAId: string | undefined;
+        let tenantBId: string | undefined;
+        let userId: string | undefined;
+
+        try {
+            const user = await adminDb.user.create({
+                data: {
+                    name: "RLS Coverage Test User",
+                    email: `rls-coverage-${suffix}@example.com`,
+                },
+            });
+
+            userId = user.id;
+
+            const tenantA = await adminDb.tenant.create({
+                data: {
+                    name: "Coverage Tenant A",
+                    slug: `coverage-a-${suffix}`,
+                },
+            });
+
+            tenantAId = tenantA.id;
+
+            const tenantB = await adminDb.tenant.create({
+                data: {
+                    name: "Coverage Tenant B",
+                    slug: `coverage-b-${suffix}`,
+                },
+            });
+
+            tenantBId = tenantB.id;
+
+            await adminDb.membership.createMany({
+                data: [
+                    {
+                        userId: user.id,
+                        tenantId: tenantA.id,
+                        role: "OWNER",
+                    },
+                    {
+                        userId: user.id,
+                        tenantId: tenantB.id,
+                        role: "OWNER",
+                    },
+                ],
+            });
+
+            await adminDb.apiKey.createMany({
+                data: [
+                    {
+                        tenantId: tenantA.id,
+                        createdById: user.id,
+                        name: "Tenant A Key",
+                        keyHash: `coverage-key-a-${suffix}`,
+                    },
+                    {
+                        tenantId: tenantB.id,
+                        createdById: user.id,
+                        name: "Tenant B Key",
+                        keyHash: `coverage-key-b-${suffix}`,
+                    },
+                ],
+            });
+
+            await adminDb.invitation.createMany({
+                data: [
+                    {
+                        tenantId: tenantA.id,
+                        email: `a-${suffix}@example.com`,
+                        role: "VIEWER",
+                        tokenHash: `coverage-token-a-${suffix}`,
+                        invitedById: user.id,
+                        expiresAt: new Date(Date.now() + 86400000),
+                    },
+                    {
+                        tenantId: tenantB.id,
+                        email: `b-${suffix}@example.com`,
+                        role: "VIEWER",
+                        tokenHash: `coverage-token-b-${suffix}`,
+                        invitedById: user.id,
+                        expiresAt: new Date(Date.now() + 86400000),
+                    },
+                ],
+            });
+
+            await adminDb.eventIngestionRequest.createMany({
+                data: [
+                    {
+                        tenantId: tenantA.id,
+                        idempotencyKeyHash: `coverage-request-a-${suffix}`,
+                        expiresAt: new Date(Date.now() + 86400000),
+                    },
+                    {
+                        tenantId: tenantB.id,
+                        idempotencyKeyHash: `coverage-request-b-${suffix}`,
+                        expiresAt: new Date(Date.now() + 86400000),
+                    },
+                ],
+            });
+
+            const visibleRecords = await appDb.$transaction(async (tx) => {
+                await tx.$queryRaw`
+                SELECT set_config('app.tenant_id', ${tenantA.id}, true)
+            `;
+
+                const tenants = await tx.$queryRaw<
+                    Array<{ id: string }>
+                >`SELECT * FROM "Tenant"`;
+
+                const memberships = await tx.$queryRaw<
+                    Array<{ tenantId: string }>
+                >`SELECT * FROM "Membership"`;
+
+                const apiKeys = await tx.$queryRaw<
+                    Array<{ tenantId: string }>
+                >`SELECT * FROM "ApiKey"`;
+
+                const invitations = await tx.$queryRaw<
+                    Array<{ tenantId: string }>
+                >`SELECT * FROM "Invitation"`;
+
+                const ingestionRequests = await tx.$queryRaw<
+                    Array<{ tenantId: string }>
+                >`SELECT * FROM "EventIngestionRequest"`;
+
+                return {
+                    tenants,
+                    memberships,
+                    apiKeys,
+                    invitations,
+                    ingestionRequests,
+                };
+            });
+
+            expect(
+                visibleRecords.tenants.some((row) => row.id === tenantB.id),
+            ).toBe(false);
+
+            expect(
+                visibleRecords.tenants.some((row) => row.id === tenantA.id),
+            ).toBe(true);
+
+            for (const rows of [
+                visibleRecords.memberships,
+                visibleRecords.apiKeys,
+                visibleRecords.invitations,
+                visibleRecords.ingestionRequests,
+            ]) {
+                expect(
+                    rows.some((row) => row.tenantId === tenantB.id),
+                ).toBe(false);
+
+                expect(
+                    rows.some((row) => row.tenantId === tenantA.id),
+                ).toBe(true);
+            }
+        } finally {
+            const tenantIds = [tenantAId, tenantBId].filter(
+                (id): id is string => Boolean(id),
+            );
+
+            if (tenantIds.length > 0) {
+                await adminDb.tenant.deleteMany({
+                    where: { id: { in: tenantIds } },
+                });
+            }
+
+            if (userId) {
+                await adminDb.user.delete({
+                    where: { id: userId },
+                });
+            }
+        }
+    }, 15000);
+
+
+    it("restricts special lookup policies to the matching user, API key, and invitation", async () => {
+        const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+        let tenantAId: string | undefined;
+        let tenantBId: string | undefined;
+        let userAId: string | undefined;
+        let userBId: string | undefined;
+
+        try {
+            const userA = await adminDb.user.create({
+                data: {
+                    email: `lookup-a-${suffix}@example.com`,
+                    name: "Lookup User A",
+                },
+            });
+            userAId = userA.id;
+
+            const userB = await adminDb.user.create({
+                data: {
+                    email: `lookup-b-${suffix}@example.com`,
+                    name: "Lookup User B",
+                },
+            });
+            userBId = userB.id;
+
+            const tenantA = await adminDb.tenant.create({
+                data: {
+                    name: "Lookup Tenant A",
+                    slug: `lookup-a-${suffix}`,
+                },
+            });
+            tenantAId = tenantA.id;
+
+            const tenantB = await adminDb.tenant.create({
+                data: {
+                    name: "Lookup Tenant B",
+                    slug: `lookup-b-${suffix}`,
+                },
+            });
+            tenantBId = tenantB.id;
+
+            await adminDb.membership.createMany({
+                data: [
+                    { userId: userA.id, tenantId: tenantA.id, role: "OWNER" },
+                    { userId: userA.id, tenantId: tenantB.id, role: "VIEWER" },
+                    { userId: userB.id, tenantId: tenantB.id, role: "OWNER" },
+                ],
+            });
+
+            const apiKeyA = await adminDb.apiKey.create({
+                data: {
+                    tenantId: tenantA.id,
+                    createdById: userA.id,
+                    name: "Lookup Key A",
+                    keyHash: `lookup-key-a-${suffix}`,
+                    keyLookupHash: `lookup-hash-a-${suffix}`,
+                },
+            });
+
+            const apiKeyB = await adminDb.apiKey.create({
+                data: {
+                    tenantId: tenantB.id,
+                    createdById: userA.id,
+                    name: "Lookup Key B",
+                    keyHash: `lookup-key-b-${suffix}`,
+                    keyLookupHash: `lookup-hash-b-${suffix}`,
+                },
+            });
+
+            const invitationA = await adminDb.invitation.create({
+                data: {
+                    tenantId: tenantA.id,
+                    email: `invite-a-${suffix}@example.com`,
+                    role: "VIEWER",
+                    tokenHash: `lookup-token-a-${suffix}`,
+                    invitedById: userA.id,
+                    expiresAt: new Date(Date.now() + 86400000),
+                },
+            });
+
+            const invitationB = await adminDb.invitation.create({
+                data: {
+                    tenantId: tenantB.id,
+                    email: `invite-b-${suffix}@example.com`,
+                    role: "VIEWER",
+                    tokenHash: `lookup-token-b-${suffix}`,
+                    invitedById: userA.id,
+                    expiresAt: new Date(Date.now() + 86400000),
+                },
+            });
+
+            const results = await appDb.$transaction(async (tx) => {
+                await tx.$queryRaw`
+                    SELECT set_config('app.user_id', ${userA.id}, true)
+                `;
+
+                const memberships = await tx.$queryRaw<
+                    Array<{ userId: string; tenantId: string }>
+                >`SELECT * FROM "Membership"`;
+
+                await tx.$queryRaw`
+                    SELECT set_config(
+                        'app.api_key_hash',
+                        ${`lookup-hash-b-${suffix}`},
+                        true
+                    )
+                `;
+
+                const apiKeys = await tx.$queryRaw<
+                    Array<{ id: string }>
+                >`SELECT * FROM "ApiKey"`;
+
+                await tx.$queryRaw`
+                    SELECT set_config(
+                        'app.invitation_token_hash',
+                        ${`lookup-token-b-${suffix}`},
+                        true
+                    )
+                `;
+
+                const invitations = await tx.$queryRaw<
+                    Array<{ id: string }>
+                >`SELECT * FROM "Invitation"`;
+
+                return { memberships, apiKeys, invitations };
+            });
+
+            expect(results.memberships).toHaveLength(2);
+            expect(
+                results.memberships.every((row) => row.userId === userA.id),
+            ).toBe(true);
+
+            expect(results.apiKeys).toHaveLength(1);
+            expect(results.apiKeys[0]?.id).toBe(apiKeyB.id);
+            expect(results.apiKeys.some((row) => row.id === apiKeyA.id)).toBe(false);
+
+            expect(results.invitations).toHaveLength(1);
+            expect(results.invitations[0]?.id).toBe(invitationB.id);
+            expect(
+                results.invitations.some((row) => row.id === invitationA.id),
+            ).toBe(false);
+        } finally {
+            const tenantIds = [tenantAId, tenantBId].filter(
+                (id): id is string => Boolean(id),
+            );
+
+            if (tenantIds.length > 0) {
+                await adminDb.tenant.deleteMany({
+                    where: { id: { in: tenantIds } },
+                });
+            }
+
+            const userIds = [userAId, userBId].filter(
+                (id): id is string => Boolean(id),
+            );
+
+            if (userIds.length > 0) {
+                await adminDb.user.deleteMany({
+                    where: { id: { in: userIds } },
+                });
+            }
+        }
+    }, 15000);
 });

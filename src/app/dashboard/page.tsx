@@ -6,6 +6,7 @@ import ApiKeysPanel from "./ApiKeysPanel";
 import OrganizationSwitcher from "./OrganizationSwitcher";
 import CreateOrganization from "./CreateOrganization";
 import InviteMember from "./InviteMember";
+import AnalyticsOverview from "./AnalyticsOverview";
 
 const DashboardPage = async () => {
   const session = await auth();
@@ -139,14 +140,7 @@ const DashboardPage = async () => {
 
         <ApiKeysPanel />
 
-        <div className="mt-6 rounded-xl border border-gray-200 bg-white p-6">
-          <h2 className="text-lg font-semibold">Analytics overview</h2>
-
-          <p className="mt-2 text-sm text-gray-600">
-            Event volume, active users, funnels, and retention analytics will
-            appear here as those required features are implemented.
-          </p>
-        </div>
+        <AnalyticsOverview />
       </section>
     </main>
   );
