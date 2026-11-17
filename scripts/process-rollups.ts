@@ -1,3 +1,4 @@
+
 import "dotenv/config";
 import { PrismaClient } from "../src/generated/prisma/client";
 
@@ -55,6 +56,11 @@ const processTenantRollups = async (tenantId: string) => {
             WHERE "tenantId" = ${tenantId}
         `;
 
+        await tx.$executeRaw`
+            DELETE FROM "TenantUserActivityDaily"
+            WHERE "tenantId" = ${tenantId}
+        `;
+
         // Tenant-wise hourly aggregation.
         const tenantHourly = await tx.$executeRaw`
             INSERT INTO "TenantHourlyRollup"
@@ -83,6 +89,20 @@ const processTenantRollups = async (tenantId: string) => {
             FROM "Event"
             WHERE "tenantId" = ${tenantId}
             GROUP BY 2
+        `;
+
+        // Daily unique user activity aggregation.
+        const userActivityDaily = await tx.$executeRaw`
+            INSERT INTO "TenantUserActivityDaily"
+                ("tenantId", "bucketStart", "distinctId", "updatedAt")
+            SELECT
+                ${tenantId},
+                date_trunc('day', "occurredAt" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
+                "distinctId",
+                NOW()
+            FROM "Event"
+            WHERE "tenantId" = ${tenantId}
+            GROUP BY 2, 3
         `;
 
         // Event-wise hourly aggregation.
@@ -120,6 +140,7 @@ const processTenantRollups = async (tenantId: string) => {
         return {
             tenantHourly,
             tenantDaily,
+            userActivityDaily,
             eventHourly,
             eventDaily,
         };

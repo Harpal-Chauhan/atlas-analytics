@@ -11,7 +11,7 @@ const loginSchema = z.object({
     password: z.string().min(1).max(128),
 });
 
-const tenantIdSchema = z.string().min(1).max(128)
+const tenantIdSchema = z.string().min(1).max(128);
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
     session: {
@@ -47,6 +47,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
                         name: true,
                         email: true,
                         passwordHash: true,
+                        internalRole: true,
                     },
                 });
 
@@ -67,6 +68,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
                     id: user.id,
                     name: user.name,
                     email: user.email,
+                    internalRole: user.internalRole,
                 };
             },
         }),
@@ -76,11 +78,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         jwt: async ({ token, user, trigger, session }) => {
             if (user) {
                 token.id = user.id;
+                token.internalRole = user.internalRole ?? null;
 
                 const membership = await prisma.$transaction(async (tx) => {
                     await tx.$queryRaw`
-                        SELECT set_config('app.user_id', ${user.id}, true)
-                    `;
+            SELECT set_config('app.user_id', ${user.id}, true)
+          `;
 
                     const memberships = await tx.membership.findMany({
                         where: { userId: user.id },
@@ -89,8 +92,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
                     for (const item of memberships) {
                         await tx.$queryRaw`
-                        SELECT set_config('app.tenant_id', ${item.tenantId}, true)
-                    `;
+              SELECT set_config('app.tenant_id', ${item.tenantId}, true)
+            `;
 
                         const tenant = await tx.tenant.findUnique({
                             where: { id: item.tenantId },
@@ -113,45 +116,45 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             // Validate organization changes requested by the client.
             if (trigger === "update" && typeof token.id === "string") {
                 const parsedTenantId = tenantIdSchema.safeParse(
-                    session?.activeTenantId
-                )
+                    session?.activeTenantId,
+                );
 
                 if (parsedTenantId.success) {
-                    const requestedTenantId = parsedTenantId.data
+                    const requestedTenantId = parsedTenantId.data;
 
                     const isAuthorized = await prisma.$transaction(async (tx) => {
                         await tx.$queryRaw`
-                            SELECT set_config('app.user_id', ${token.id as string}, true)
-                        `
+              SELECT set_config('app.user_id', ${token.id as string}, true)
+            `;
 
                         const membership = await tx.membership.findUnique({
                             where: {
                                 userId_tenantId: {
                                     userId: token.id as string,
-                                    tenantId: requestedTenantId
-                                }
+                                    tenantId: requestedTenantId,
+                                },
                             },
-                            select: { id: true }
-                        })
+                            select: { id: true },
+                        });
 
                         if (!membership) {
-                            return false
+                            return false;
                         }
 
                         await tx.$queryRaw`
-                            SELECT set_config('app.tenant_id', ${requestedTenantId}, true)
-                        `
+              SELECT set_config('app.tenant_id', ${requestedTenantId}, true)
+            `;
 
                         const tenant = await tx.tenant.findUnique({
                             where: { id: requestedTenantId },
-                            select: { suspendedAt: true }
-                        })
+                            select: { suspendedAt: true },
+                        });
 
-                        return Boolean(tenant && tenant.suspendedAt === null)
-                    })
+                        return Boolean(tenant && tenant.suspendedAt === null);
+                    });
 
                     if (isAuthorized) {
-                        token.activeTenantId = requestedTenantId
+                        token.activeTenantId = requestedTenantId;
                     }
                 }
             }
@@ -162,6 +165,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         session: async ({ session, token }) => {
             if (session.user && token.id) {
                 session.user.id = String(token.id);
+                session.user.internalRole = token.internalRole ?? null;
             }
 
             if (session.user && token.activeTenantId) {

@@ -10,6 +10,8 @@ import {
     verifyApiKey,
 } from "@/lib/api-key";
 import { consumeApiKeyToken } from "@/lib/rate-limit";
+import { consumeMonthlyQuota } from "@/lib/monthly-quota";
+import { createRequestLogger } from "@/lib/request-logger";
 
 const eventSchema = z.object({
     eventName: z.string().trim().min(1).max(100),
@@ -29,11 +31,13 @@ const createResponse = (
     body: object,
     status: number,
     headers: Record<string, string> = {},
+    requestId?: string
 ) =>
     NextResponse.json(body, {
         status,
         headers: {
             "Cache-Control": "no-store",
+            ...(requestId ? { "X-Request-Id": requestId } : {}),
             ...headers,
         },
     });
@@ -45,6 +49,14 @@ type IngestionResult = {
 };
 
 export const POST = async (request: Request) => {
+    const { requestId, log } = createRequestLogger(request)
+
+    const respond = (
+        body: object,
+        status: number,
+        headers: Record<string, string> = {}
+    ) => createResponse(body, status, headers, requestId)
+
     const authorization = request.headers.get("authorization");
 
     const apiKey = authorization?.startsWith("Bearer ")
@@ -52,7 +64,7 @@ export const POST = async (request: Request) => {
         : "";
 
     if (!/^atlas_[a-f0-9]{64}$/i.test(apiKey)) {
-        return createResponse(
+        return respond(
             { message: "A valid API key is required." },
             401,
         );
@@ -63,7 +75,7 @@ export const POST = async (request: Request) => {
         ?.trim();
 
     if (!idempotencyKey || idempotencyKey.length > 255) {
-        return createResponse(
+        return respond(
             {
                 message:
                     "A valid Idempotency-Key header is required (1–255 characters).",
@@ -77,13 +89,13 @@ export const POST = async (request: Request) => {
     try {
         body = await request.json();
     } catch {
-        return createResponse({ message: "Invalid JSON body." }, 400);
+        return respond({ message: "Invalid JSON body." }, 400);
     }
 
     const parsed = requestSchema.safeParse(body);
 
     if (!parsed.success) {
-        return createResponse(
+        return respond(
             {
                 message:
                     "Invalid event data. Send one event or 1–500 events.",
@@ -124,7 +136,7 @@ export const POST = async (request: Request) => {
         });
 
         if (!storedKey) {
-            return createResponse(
+            return respond(
                 { message: "Invalid or revoked API key." },
                 401,
             );
@@ -137,7 +149,7 @@ export const POST = async (request: Request) => {
         );
 
         if (!isValidKey) {
-            return createResponse(
+            return respond(
                 { message: "Invalid or revoked API key." },
                 401,
             );
@@ -208,6 +220,28 @@ export const POST = async (request: Request) => {
                     },
                 });
 
+                // Return early if this idempotency key was already processed.
+                const existingRequest = await tx.eventIngestionRequest.findUnique({
+                    where: {
+                        tenantId_idempotencyKeyHash: {
+                            tenantId: currentKey.tenantId,
+                            idempotencyKeyHash,
+                        },
+                    },
+                });
+
+                if (existingRequest) {
+                    return {
+                        status: 202,
+                        body: {
+                            status: 202,
+                            accepted: 0,
+                            duplicate: true,
+                        },
+                        headers: {},
+                    };
+                }
+
                 // Check rate limit before reserving the idempotency key.
                 const rateLimit = await consumeApiKeyToken(
                     tx as unknown as Prisma.TransactionClient,
@@ -223,6 +257,41 @@ export const POST = async (request: Request) => {
                         headers: {
                             "Retry-After": String(rateLimit.retryAfterSeconds),
                         },
+                    };
+                }
+
+                // Check and consume the tenant's monthly event quota.
+                const quota = await consumeMonthlyQuota(
+                    tx as unknown as Prisma.TransactionClient,
+                    currentKey.tenantId,
+                    events.length,
+                );
+
+                if (!quota.allowed) {
+                    const resetAt = new Date(
+                        Date.UTC(
+                            quota.monthStart.getUTCFullYear(),
+                            quota.monthStart.getUTCMonth() + 1,
+                            1,
+                        ),
+                    );
+
+                    return {
+                        status: 429,
+                        body: {
+                            error: {
+                                code: "MONTHLY_EVENT_QUOTA_EXCEEDED",
+                                message: "Monthly event quota exceeded.",
+                            },
+                            quota: {
+                                limit: quota.limit,
+                                used: quota.used,
+                                requested: events.length,
+                                remaining: quota.remaining,
+                                resetAt: resetAt.toISOString(),
+                            },
+                        },
+                        headers: {},
                     };
                 }
 
@@ -265,7 +334,7 @@ export const POST = async (request: Request) => {
             },
         );
 
-        return createResponse(
+        return respond(
             result.body,
             result.status,
             result.headers,
@@ -275,15 +344,17 @@ export const POST = async (request: Request) => {
             error instanceof Prisma.PrismaClientKnownRequestError &&
             error.code === "P2002"
         ) {
-            return createResponse(
+            return respond(
                 { status: 202, accepted: 0, duplicate: true },
                 202,
             );
         }
 
-        console.error("Event ingestion error:", error);
+        log("error", "event_ingestion_failed", {
+            error: error instanceof Error ? error.message : String(error),
+        });
 
-        return createResponse(
+        return respond(
             { message: "Could not accept events." },
             500,
         );

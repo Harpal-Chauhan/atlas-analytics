@@ -21,14 +21,58 @@ const TOTAL_EVENTS = Number(
 );
 
 const BATCH_SIZE = 5000;
+const EVENTS_PER_JOURNEY = 6;
 
-const eventNames: string[] = [
-    "Page Viewed",
-    "Product Viewed",
-    "Add to Cart",
-    "Checkout Started",
-    "Purchase Completed",
+const SEED_SOURCE = "atlas-seed-v2";
+
+const KEEP_OLD_SEED = process.env.SEED_KEEP_OLD === "true";
+
+const journeyTemplates: string[][] = [
+    [
+        "Sign Up",
+        "Page Viewed",
+        "Product Viewed",
+        "Add to Cart",
+        "Checkout Started",
+        "Purchase Completed",
+    ],
+    [
+        "Page Viewed",
+        "Product Viewed",
+        "Add to Cart",
+        "Cart Viewed",
+        "Checkout Started",
+        "Checkout Abandoned",
+    ],
+    [
+        "Page Viewed",
+        "Category Viewed",
+        "Product Viewed",
+        "Search Performed",
+        "Product Viewed",
+        "Page Viewed",
+    ],
+    [
+        "Page Viewed",
+        "Search Performed",
+        "Product Viewed",
+        "Add to Cart",
+        "Cart Viewed",
+        "Page Viewed",
+    ],
 ];
+
+const categories = [
+    "Electronics",
+    "Clothing",
+    "Home",
+    "Books",
+    "Sports",
+];
+
+const devices = ["desktop", "mobile", "tablet"];
+
+const countries = ["IN", "US", "GB", "CA", "AU"];
 
 const seedEvents = async () => {
     if (!Number.isSafeInteger(TOTAL_EVENTS) || TOTAL_EVENTS < 1) {
@@ -52,15 +96,16 @@ const seedEvents = async () => {
         console.log(`Found ${tenants.length} tenants.`);
         console.log(`Target events: ${TOTAL_EVENTS.toLocaleString()}`);
 
-        // Remove only records created by this seed script.
-        const deleted = await db.$executeRaw`
+        // Remove only incomplete or previous v2 seed data.
+        const deletedV2 = await db.$executeRaw`
             DELETE FROM "Event"
-            WHERE "properties" @> '{"seedSource":"atlas-seed-v1"}'::jsonb
+            WHERE "properties" @> '{"seedSource":"atlas-seed-v2"}'::jsonb
         `;
 
-        console.log(`Removed previous seed events: ${deleted}`);
+        console.log(`Removed previous v2 seed events: ${deletedV2}`);
 
         const endDate = new Date();
+
         const startDate = new Date(
             endDate.getTime() - 90 * 24 * 60 * 60 * 1000,
         );
@@ -74,8 +119,12 @@ const seedEvents = async () => {
             const tenantCount =
                 baseCount + (tenantIndex < remainder ? 1 : 0);
 
+            const journeyCount = Math.ceil(
+                tenantCount / EVENTS_PER_JOURNEY,
+            );
+
             console.log(
-                `Seeding ${tenantCount.toLocaleString()} events for tenant ${tenant.id}`,
+                `Seeding ${tenantCount.toLocaleString()} realistic events for tenant ${tenant.id}`,
             );
 
             for (
@@ -93,24 +142,143 @@ const seedEvents = async () => {
                     (_, batchIndex) => {
                         const eventIndex = offset + batchIndex;
 
-                        const progress =
-                            tenantCount > 1
-                                ? eventIndex / (tenantCount - 1)
-                                : 0;
-
-                        const occurredAt = new Date(
-                            startDate.getTime() +
-                            progress *
-                            (endDate.getTime() - startDate.getTime()),
+                        const journeyIndex = Math.floor(
+                            eventIndex / EVENTS_PER_JOURNEY,
                         );
 
-                        const eventName =
-                            eventNames[
-                            Math.floor(Math.random() * eventNames.length)
-                            ]!;
+                        const step = eventIndex % EVENTS_PER_JOURNEY;
 
-                        const distinctId = `seed-user-${Math.floor(Math.random() * 100000)
-                            }`;
+                        const journeyType =
+                            journeyIndex % journeyTemplates.length;
+
+                        const eventName =
+                            journeyTemplates[journeyType]![step]!;
+
+                        const distinctId =
+                            `seed-user-${tenantIndex}-${journeyIndex}`;
+
+                        const sessionId =
+                            `seed-session-${tenantIndex}-${journeyIndex}`;
+
+                        const productNumber =
+                            (journeyIndex % 1000) + 1;
+
+                        const productId = `product-${productNumber}`;
+
+                        const category =
+                            categories[journeyIndex % categories.length]!;
+
+                        const deviceType =
+                            devices[journeyIndex % devices.length]!;
+
+                        const country =
+                            countries[journeyIndex % countries.length]!;
+
+                        const journeyProgress =
+                            journeyCount > 1
+                                ? journeyIndex / (journeyCount - 1)
+                                : 0;
+
+                        const availableDuration =
+                            endDate.getTime() -
+                            startDate.getTime() -
+                            5 * 60 * 1000;
+
+                        const journeyStartedAt = new Date(
+                            startDate.getTime() +
+                            journeyProgress * availableDuration,
+                        );
+
+                        const occurredAt = new Date(
+                            journeyStartedAt.getTime() + step * 30_000,
+                        );
+
+                        const properties: Record<
+                            string,
+                            string | number | boolean
+                        > = {
+                            seedSource: SEED_SOURCE,
+                            seedUser: distinctId,
+                            source: "seed-script",
+                            sessionId,
+                            journeyType: [
+                                "converted",
+                                "checkout-abandoned",
+                                "browsing",
+                                "cart-abandoned",
+                            ][journeyType]!,
+                            step: step + 1,
+                            deviceType,
+                            country,
+                        };
+
+                        if (eventName === "Sign Up") {
+                            properties.signupMethod =
+                                journeyIndex % 2 === 0
+                                    ? "email"
+                                    : "google";
+                        }
+
+                        if (eventName === "Page Viewed") {
+                            properties.pagePath =
+                                journeyIndex % 2 === 0
+                                    ? "/"
+                                    : "/products";
+                            properties.referrer = "direct";
+                        }
+
+                        if (eventName === "Category Viewed") {
+                            properties.category = category;
+                        }
+
+                        if (eventName === "Search Performed") {
+                            properties.searchTerm = category.toLowerCase();
+                        }
+
+                        if (
+                            [
+                                "Product Viewed",
+                                "Add to Cart",
+                                "Purchase Completed",
+                            ].includes(eventName)
+                        ) {
+                            properties.productId = productId;
+                            properties.category = category;
+                            properties.price =
+                                19.99 + (journeyIndex % 200);
+                            properties.currency = "USD";
+                        }
+
+                        if (
+                            [
+                                "Add to Cart",
+                                "Cart Viewed",
+                                "Checkout Started",
+                                "Checkout Abandoned",
+                                "Purchase Completed",
+                            ].includes(eventName)
+                        ) {
+                            properties.cartId =
+                                `cart-${tenantIndex}-${journeyIndex}`;
+                        }
+
+                        if (eventName === "Checkout Started") {
+                            properties.checkoutId =
+                                `checkout-${tenantIndex}-${journeyIndex}`;
+                        }
+
+                        if (eventName === "Checkout Abandoned") {
+                            properties.abandonmentReason =
+                                "session-ended";
+                        }
+
+                        if (eventName === "Purchase Completed") {
+                            properties.orderId =
+                                `order-${tenantIndex}-${journeyIndex}`;
+                            properties.revenue =
+                                19.99 + (journeyIndex % 200);
+                            properties.currency = "USD";
+                        }
 
                         return {
                             tenantId: tenant.id,
@@ -119,11 +287,7 @@ const seedEvents = async () => {
                             eventName,
                             distinctId,
                             occurredAt,
-                            properties: {
-                                seedSource: "atlas-seed-v1",
-                                seedUser: distinctId,
-                                source: "seed-script",
-                            },
+                            properties,
                         };
                     },
                 );
@@ -143,8 +307,26 @@ const seedEvents = async () => {
         }
 
         console.log(
-            `Successfully inserted ${totalInserted.toLocaleString()} events.`,
+            `Successfully inserted ${totalInserted.toLocaleString()} realistic events.`,
         );
+
+        // Keep the old dataset until the complete new dataset exists.
+        if (!KEEP_OLD_SEED) {
+            const deletedLegacy = await db.$executeRaw`
+                DELETE FROM "Event"
+                WHERE "properties" @> '{"seedSource":"atlas-seed-v1"}'::jsonb
+            `;
+
+            console.log(
+                `Removed previous v1 seed events: ${deletedLegacy}`,
+            );
+        } else {
+            console.log(
+                "Keeping previous seed data because SEED_KEEP_OLD=true.",
+            );
+        }
+
+        console.log("Realistic event seeding completed successfully.");
     } finally {
         await db.$disconnect();
     }

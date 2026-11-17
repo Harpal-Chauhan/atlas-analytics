@@ -1,3 +1,4 @@
+
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -14,36 +15,57 @@ enum MembershipRole {
   VIEWER
 }
 
+enum InternalRole {
+  OPS
+}
+
 model User {
-  id          String       @id(map: "AuthUser_pkey") @default(cuid())
-  name        String?
-  email       String       @unique(map: "AuthUser_email_key")
-  passwordHash String?
-  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime     @updatedAt @db.Timestamptz(6)
-  memberships Membership[]
-  apiKeys     ApiKey[]
-  events      Event[]      @relation("EventActor")
-  @@map("AuthUser")
+  id             String       @id(map: "AuthUser_pkey") @default(cuid())
+  name           String?
+  email          String       @unique(map: "AuthUser_email_key")
+  passwordHash   String?
+  internalRole   InternalRole?
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+  memberships    Membership[]
+  apiKeys        ApiKey[]
+  events         Event[]      @relation("EventActor")
   sentInvitations Invitation[] @relation("InvitationSender")
+
+  @@map("AuthUser")
 }
 
 model Tenant {
-  id          String       @id @default(cuid())
-  name        String
-  slug        String       @unique
-  suspendedAt DateTime?    @db.Timestamptz(6)
-  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime     @updatedAt @db.Timestamptz(6)
-  memberships Membership[]
-  apiKeys     ApiKey[]
-  events      Event[]
-  ingestionRequests EventIngestionRequest[]
-  invitations Invitation[]
+  id                 String       @id @default(cuid())
+  name               String
+  slug               String       @unique
+  suspendedAt        DateTime?    @db.Timestamptz(6)
+  createdAt          DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime     @updatedAt @db.Timestamptz(6)
+  memberships        Membership[]
+  apiKeys            ApiKey[]
+  events             Event[]
+  ingestionRequests  EventIngestionRequest[]
+  invitations        Invitation[]
   hourlyRollups      TenantHourlyRollup[]
-dailyRollups       TenantDailyRollup[]
-eventHourlyRollups EventHourlyRollup[]
-eventDailyRollups  EventDailyRollup[]
+  dailyRollups       TenantDailyRollup[]
+  eventHourlyRollups EventHourlyRollup[]
+  eventDailyRollups  EventDailyRollup[]
+  userActivityRollups TenantUserActivityDaily[]
+  monthlyEventQuota   Int @default(1000000)
+  monthlyUsage        TenantMonthlyUsage[]
+}
+
+model TenantMonthlyUsage {
+  tenantId   String
+  monthStart DateTime @db.Date
+  eventCount Int      @default(0)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, monthStart])
+  @@index([monthStart])
 }
 
 model Membership {
@@ -52,8 +74,9 @@ model Membership {
   tenantId  String
   role      MembershipRole @default(VIEWER)
   createdAt DateTime       @default(now()) @db.Timestamptz(6)
-  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([userId, tenantId])
   @@index([tenantId])
@@ -77,7 +100,6 @@ model Invitation {
   @@index([expiresAt])
 }
 
-
 model ApiKey {
   id            String    @id @default(cuid())
   tenantId      String
@@ -89,32 +111,34 @@ model ApiKey {
   revokedAt     DateTime? @db.Timestamptz(6)
   createdAt     DateTime  @default(now()) @db.Timestamptz(6)
 
-  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdBy     User      @relation(fields: [createdById], references: [id], onDelete: Restrict)
-  events        Event[]
+  tenant    Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User            @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  events    Event[]
   rateLimit ApiKeyRateLimit?
 
   @@index([tenantId])
 }
 
-
 model Event {
-  id          BigInt    @id @default(autoincrement())
-  tenantId    String
-  apiKeyId    String?
-  userId      String?
-  eventName   String
-  distinctId  String
-  properties  Json      @default("{}")
-  occurredAt  DateTime  @db.Timestamptz(6)
-  receivedAt  DateTime  @default(now()) @db.Timestamptz(6)
-  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  apiKey      ApiKey?   @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
-  user        User?     @relation("EventActor", fields: [userId], references: [id], onDelete: SetNull)
+  id         BigInt   @id @default(autoincrement())
+  tenantId   String
+  apiKeyId   String?
+  userId     String?
+  eventName  String
+  distinctId String
+  properties Json     @default("{}")
+  occurredAt DateTime @db.Timestamptz(6)
+  receivedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  apiKey ApiKey? @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  user   User?   @relation("EventActor", fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, occurredAt])
   @@index([tenantId, eventName, occurredAt])
   @@index([tenantId, distinctId, occurredAt])
+  @@index([tenantId, distinctId, eventName, occurredAt])
+  @@index([tenantId, receivedAt])
 }
 
 model EventIngestionRequest {
@@ -129,7 +153,6 @@ model EventIngestionRequest {
   @@unique([tenantId, idempotencyKeyHash])
   @@index([expiresAt])
 }
-
 
 model ApiKeyRateLimit {
   apiKeyId     String   @id
@@ -168,6 +191,19 @@ model TenantDailyRollup {
   @@map("TenantDailyRollup")
 }
 
+model TenantUserActivityDaily {
+  tenantId    String
+  bucketStart DateTime @db.Timestamptz(6)
+  distinctId  String
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, bucketStart, distinctId])
+  @@index([tenantId, distinctId, bucketStart])
+  @@map("TenantUserActivityDaily")
+}
+
 model EventHourlyRollup {
   tenantId    String
   bucketStart DateTime @db.Timestamptz(6)
@@ -201,10 +237,10 @@ model EventDailyRollup {
 model Post {
   authorId  Int
   content   String?
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  id        Int      @id @default(autoincrement())
+  createdAt DateTime   @default(now()) @db.Timestamptz(6)
+  id        Int        @id @default(autoincrement())
   title     String
-  updatedAt DateTime @db.Timestamptz(6)
+  updatedAt DateTime   @db.Timestamptz(6)
   User      LegacyUser @relation(fields: [authorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([authorId], map: "Post_authorId_idx_e47547ed")

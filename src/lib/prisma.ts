@@ -23,47 +23,52 @@ const createPrismaClient = () => {
                 tenantId: string,
                 callback: (tx: Prisma.TransactionClient) => Promise<T>,
             ): Promise<T> => {
-                return baseClient.$transaction(async (tx) => {
-                    await tx.$queryRaw`
+                return baseClient.$transaction(
+                    async (tx) => {
+                        await tx.$queryRaw`
             SELECT set_config('app.user_id', ${userId}, true)
           `;
 
-                    await tx.$queryRaw`
+                        await tx.$queryRaw`
             SELECT set_config('app.tenant_id', ${tenantId}, true)
           `;
 
-                    const membership = await tx.membership.findUnique({
-                        where: {
-                            userId_tenantId: {
-                                userId,
-                                tenantId,
+                        const membership = await tx.membership.findUnique({
+                            where: {
+                                userId_tenantId: {
+                                    userId,
+                                    tenantId,
+                                },
                             },
-                        },
-                        select: {
-                            role: true,
-                        },
-                    });
+                            select: {
+                                role: true,
+                            },
+                        });
 
-                    if (!membership) {
-                        throw new Error(
-                            "You do not have access to this organization.",
-                        );
-                    }
+                        if (!membership) {
+                            throw new Error(
+                                "You do not have access to this organization.",
+                            );
+                        }
 
-                    const tenant = await tx.tenant.findUnique({
-                        where: {
-                            id: tenantId,
-                        },
-                        select: {
-                            suspendedAt: true,
-                        },
-                    });
+                        const tenant = await tx.tenant.findUnique({
+                            where: {
+                                id: tenantId,
+                            },
+                            select: {
+                                suspendedAt: true,
+                            },
+                        });
 
-                    if (!tenant || tenant.suspendedAt) {
-                        throw new Error("Organization is unavailable.");
-                    }
+                        if (!tenant || tenant.suspendedAt) {
+                            throw new Error("Organization is unavailable.");
+                        }
 
-                    return callback(tx);
+                        return callback(tx);
+                    },
+                {
+                    maxWait: 10000,
+                    timeout: 60000
                 });
             },
         },

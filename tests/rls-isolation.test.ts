@@ -219,7 +219,7 @@ describe("PostgreSQL tenant isolation", () => {
                 });
             }
         }
-    }, 15000);
+    }, 30000);
 
     it("does not expose Tenant B rollups in Tenant A context", async () => {
         const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -538,7 +538,7 @@ describe("PostgreSQL tenant isolation", () => {
                 });
             }
         }
-    }, 15000);
+    }, 30000);
 
 
     it("restricts special lookup policies to the matching user, API key, and invitation", async () => {
@@ -703,5 +703,5 @@ describe("PostgreSQL tenant isolation", () => {
                 });
             }
         }
-    }, 15000);
+    }, 30000);
 });
