@@ -1,8 +1,6 @@
 
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 type InvitationEmailInput = {
     email: string;
     organizationName: string;
@@ -30,11 +28,15 @@ export const sendInvitationEmail = async ({
     invitationUrl,
     role,
 }: InvitationEmailInput): Promise<void> => {
+    const apiKey = process.env.RESEND_API_KEY;
     const fromEmail = process.env.RESEND_FROM_EMAIL;
 
-    if (!process.env.RESEND_API_KEY || !fromEmail) {
+    if (!apiKey || !fromEmail) {
         throw new Error("Email configuration is missing.");
     }
+
+    // Initialize Resend only when an invitation email is requested.
+    const resend = new Resend(apiKey);
 
     const safeOrganizationName = escapeHtml(organizationName);
     const safeInvitationUrl = escapeHtml(invitationUrl);
