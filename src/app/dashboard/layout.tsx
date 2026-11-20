@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { Suspense } from "react";
 import { auth } from "@/auth";
 import HourlyActivity from "./HourlyActivity";
-import LiveActivity from "./LiveActivity";
 
 type DashboardLayoutProps = {
   children: ReactNode;
@@ -18,7 +17,6 @@ const DashboardLayout = async ({ children }: DashboardLayoutProps) => {
     <>
       {userId && tenantId ? (
         <section className="grid grid-cols-1 gap-6 p-4">
-          <LiveActivity />
 
           <Suspense
             fallback={

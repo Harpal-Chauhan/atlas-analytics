@@ -1,6 +1,7 @@
 
 $ErrorActionPreference = "Stop"
 
+# Securely read API key
 $secureKey = Read-Host "Paste your ATLAS API key" -AsSecureString
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
 
@@ -16,7 +17,7 @@ $requestCount = 150
 
 [System.Net.ServicePointManager]::DefaultConnectionLimit = 200
 
-$client = New-Object System.Net.Http.HttpClient
+$client = [System.Net.Http.HttpClient]::new()
 $client.Timeout = [TimeSpan]::FromSeconds(60)
 
 $requests = @()
@@ -26,28 +27,29 @@ try {
     Write-Host "Starting $requestCount parallel requests..."
 
     for ($i = 1; $i -le $requestCount; $i++) {
-        $request = New-Object System.Net.Http.HttpRequestMessage(
+        $request = [System.Net.Http.HttpRequestMessage]::new(
             [System.Net.Http.HttpMethod]::Post,
             $baseUrl
         )
 
         $request.Headers.Authorization =
-            New-Object System.Net.Http.Headers.AuthenticationHeaderValue(
-                "Bearer",
-                $apiKey
-            )
+        [System.Net.Http.Headers.AuthenticationHeaderValue]::new(
+            "Bearer",
+            $apiKey
+        )
 
-        $request.Headers.Add("Idempotency-Key", [guid]::NewGuid().ToString())
+        $request.Headers.Add(
+            "Idempotency-Key",
+            [guid]::NewGuid().ToString()
+        )
 
         $body = @{
-            eventName = "RateLimitTest"
+            eventName  = "RateLimitTest"
             distinctId = "rate-limit-user-$i"
-            properties = @{
-                test = $true
-            }
+            properties = @{ test = $true }
         } | ConvertTo-Json -Depth 5
 
-        $request.Content = New-Object System.Net.Http.StringContent(
+        $request.Content = [System.Net.Http.StringContent]::new(
             $body,
             [System.Text.Encoding]::UTF8,
             "application/json"
@@ -65,13 +67,15 @@ try {
         )
     }
     catch {
-        Write-Host "Checking individual request results..."
+        Write-Host "Some requests failed. Checking individual results..."
     }
 
     $success = 0
-    $limited = 0
+    $rateLimited = 0
+    $quotaExceeded = 0
+    $unknown429 = 0
     $errors = 0
-    $retrySeconds = 1
+    $retrySeconds = 2
 
     foreach ($task in $tasks) {
         if ($task.IsFaulted -or $task.IsCanceled) {
@@ -82,55 +86,108 @@ try {
         $response = $task.Result
         $status = [int]$response.StatusCode
 
-        if ($status -eq 202) {
-            $success++
-        }
-        elseif ($status -eq 429) {
-            $limited++
+        try {
+            if ($status -eq 202) {
+                $success++
+            }
+            elseif ($status -eq 429) {
+                $content = $response.Content.ReadAsStringAsync().
+                GetAwaiter().GetResult()
 
-            if ($response.Headers.RetryAfter -and
-                $response.Headers.RetryAfter.Delta) {
-                $retrySeconds = [Math]::Max(
-                    $retrySeconds,
-                    [Math]::Ceiling(
-                        $response.Headers.RetryAfter.Delta.TotalSeconds
-                    )
-                )
+                $payload = $null
+
+                try {
+                    $payload = $content | ConvertFrom-Json -ErrorAction Stop
+                }
+                catch {
+                    $payload = $null
+                }
+
+                $errorCode = $null
+                $message = ""
+
+                if ($payload) {
+                    if ($payload.error -and $payload.error.code) {
+                        $errorCode = $payload.error.code
+                    }
+                    elseif ($payload.code) {
+                        $errorCode = $payload.code
+                    }
+
+                    if ($payload.message) {
+                        $message = [string]$payload.message
+                    }
+                    elseif ($payload.error -and $payload.error.message) {
+                        $message = [string]$payload.error.message
+                    }
+                    elseif ($payload.error -is [string]) {
+                        $message = [string]$payload.error
+                    }
+                }
+
+                if ($errorCode -eq "MONTHLY_EVENT_QUOTA_EXCEEDED") {
+                    $quotaExceeded++
+                }
+                elseif ($message -like "*Rate limit exceeded*") {
+                    $rateLimited++
+
+                    if (
+                        $response.Headers.RetryAfter -and
+                        $response.Headers.RetryAfter.Delta
+                    ) {
+                        $retrySeconds = [Math]::Max(
+                            $retrySeconds,
+                            [Math]::Ceiling(
+                                $response.Headers.RetryAfter.Delta.TotalSeconds
+                            )
+                        )
+                    }
+                }
+                else {
+                    $unknown429++
+                    Write-Host "Unrecognized 429 response: $content"
+                }
+            }
+            else {
+                $errors++
+                Write-Host "Unexpected HTTP status: $status"
+
+                $content = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+
+                Write-Host $content
             }
         }
-        else {
-            $errors++
-            Write-Host "Unexpected HTTP status: $status"
-            Write-Host $response.Content.ReadAsStringAsync().Result
+        finally {
+            $response.Dispose()
         }
-
-        $response.Dispose()
     }
 
     Write-Host ""
     Write-Host "========== INITIAL TEST =========="
-    Write-Host "Total requests  : $requestCount"
-    Write-Host "202 Successful  : $success"
-    Write-Host "429 Rate limited: $limited"
-    Write-Host "Other errors    : $errors"
+    Write-Host "Total requests       : $requestCount"
+    Write-Host "202 Successful       : $success"
+    Write-Host "429 Rate limited     : $rateLimited"
+    Write-Host "429 Monthly quota    : $quotaExceeded"
+    Write-Host "429 Unknown          : $unknown429"
+    Write-Host "Other errors         : $errors"
     Write-Host "=================================="
 
-    if ($limited -gt 0) {
+    if ($rateLimited -gt 0) {
         Write-Host ""
         Write-Host "Waiting $retrySeconds second(s) before retry..."
 
         Start-Sleep -Seconds ($retrySeconds + 1)
 
-        $retryRequest = New-Object System.Net.Http.HttpRequestMessage(
+        $retryRequest = [System.Net.Http.HttpRequestMessage]::new(
             [System.Net.Http.HttpMethod]::Post,
             $baseUrl
         )
 
         $retryRequest.Headers.Authorization =
-            New-Object System.Net.Http.Headers.AuthenticationHeaderValue(
-                "Bearer",
-                $apiKey
-            )
+        [System.Net.Http.Headers.AuthenticationHeaderValue]::new(
+            "Bearer",
+            $apiKey
+        )
 
         $retryRequest.Headers.Add(
             "Idempotency-Key",
@@ -138,46 +195,58 @@ try {
         )
 
         $retryBody = @{
-            eventName = "RateLimitRetryTest"
+            eventName  = "RateLimitRetryTest"
             distinctId = "rate-limit-retry-user"
             properties = @{
-                test = $true
+                test  = $true
                 retry = $true
             }
         } | ConvertTo-Json -Depth 5
 
-        $retryRequest.Content = New-Object System.Net.Http.StringContent(
+        $retryRequest.Content = [System.Net.Http.StringContent]::new(
             $retryBody,
             [System.Text.Encoding]::UTF8,
             "application/json"
         )
 
         try {
-            $retryResponse = $client.SendAsync($retryRequest).GetAwaiter().GetResult()
+            $retryResponse = $client.SendAsync(
+                $retryRequest
+            ).GetAwaiter().GetResult()
 
-            Write-Host ""
-            Write-Host "========== RETRY TEST =========="
-            Write-Host "Retry HTTP status: $([int]$retryResponse.StatusCode)"
-            Write-Host "Expected status  : 202"
+            try {
+                $retryStatus = [int]$retryResponse.StatusCode
+                $retryContent = $retryResponse.Content.ReadAsStringAsync().
+                GetAwaiter().GetResult()
 
-            if ($retryResponse.StatusCode -eq [System.Net.HttpStatusCode]::Accepted) {
-                Write-Host "Retry result     : SUCCESS"
+                Write-Host ""
+                Write-Host "========== RETRY TEST =========="
+                Write-Host "Retry HTTP status: $retryStatus"
+                Write-Host "Expected status  : 202"
+
+                if (
+                    $retryResponse.StatusCode -eq
+                    [System.Net.HttpStatusCode]::Accepted
+                ) {
+                    Write-Host "Retry result     : SUCCESS"
+                }
+                else {
+                    Write-Host "Retry result     : FAILED"
+                    Write-Host $retryContent
+                }
+
+                Write-Host "================================"
             }
-            else {
-                Write-Host "Retry result     : FAILED"
-                Write-Host $retryResponse.Content.ReadAsStringAsync().Result
+            finally {
+                $retryResponse.Dispose()
             }
-
-            Write-Host "================================"
-
-            $retryResponse.Dispose()
         }
         finally {
             $retryRequest.Dispose()
         }
     }
     else {
-        Write-Host "No 429 response received. Retry test skipped."
+        Write-Host "No rate-limit 429 response received. Retry test skipped."
     }
 }
 finally {

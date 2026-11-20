@@ -18,7 +18,8 @@ const TopEvents = async ({
   const topEvents = await withTenant(userId, tenantId, async (tx) => {
     const selectedRange = getDateRange(startDate, endDate);
 
-    const eventRollups = await tx.eventDailyRollup.findMany({
+    const eventBreakdown = await tx.eventDailyRollup.groupBy({
+      by: ["eventName"],
       where: {
         tenantId,
         bucketStart: {
@@ -26,29 +27,21 @@ const TopEvents = async ({
           lt: selectedRange.endDate,
         },
       },
-      select: {
-        eventName: true,
+      _sum: {
         eventCount: true,
       },
+      orderBy: {
+        _sum: {
+          eventCount: "desc",
+        },
+      },
+      take: 5,
     });
 
-    const eventBreakdown = new Map<string, bigint>();
-
-    for (const item of eventRollups) {
-      const current = eventBreakdown.get(item.eventName) ?? BigInt(0);
-
-      eventBreakdown.set(item.eventName, current + item.eventCount);
-    }
-
-    return Array.from(eventBreakdown.entries())
-      .map(([eventName, eventCount]) => ({
-        eventName,
-        eventCount,
-      }))
-      .sort((a, b) =>
-        a.eventCount > b.eventCount ? -1 : a.eventCount < b.eventCount ? 1 : 0,
-      )
-      .slice(0, 5);
+    return eventBreakdown.map((item) => ({
+      eventName: item.eventName,
+      eventCount: item._sum.eventCount ?? BigInt(0),
+    }));
   });
 
   return (

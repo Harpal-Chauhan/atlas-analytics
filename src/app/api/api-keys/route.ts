@@ -8,35 +8,53 @@ import {
   createApiKeyLookupHash,
   hashApiKey,
 } from "@/lib/api-key";
+import { createRequestLogger } from "@/lib/request-logger";
 
 const apiKeySchema = z.object({
   name: z.string().trim().min(2).max(100),
 });
 
-const getSession = async () => {
-  return await auth();
-};
+export const GET = async (request: Request) => {
+  const { requestId, log } = createRequestLogger(request);
 
-export const GET = async () => {
-  const session = await getSession();
-  const userId = session?.user?.id;
-  const tenantId = session?.user?.activeTenantId;
+  const respond = (
+    body: unknown,
+    status = 200,
+  ) =>
+    NextResponse.json(body, {
+      status,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Request-Id": requestId,
+      },
+    });
 
-  if (!userId) {
-    return NextResponse.json(
-      { message: "Please log in first." },
-      { status: 401 },
-    );
-  }
-
-  if (!tenantId) {
-    return NextResponse.json(
-      { message: "Please select an active organization." },
-      { status: 409 },
-    );
-  }
+  log("info", "api_keys_list_requested");
 
   try {
+    const session = await auth();
+    const userId = session?.user?.id;
+    const tenantId = session?.user?.activeTenantId;
+
+    if (!userId) {
+      log("warn", "api_keys_list_unauthorized");
+      return respond(
+        { message: "Please log in first." },
+        401,
+      );
+    }
+
+    if (!tenantId) {
+      log("warn", "api_keys_list_missing_active_tenant", {
+        userId,
+      });
+
+      return respond(
+        { message: "Please select an active organization." },
+        409,
+      );
+    }
+
     const result = await prisma.$withTenant(
       userId,
       tenantId,
@@ -80,68 +98,113 @@ export const GET = async () => {
     );
 
     if (result.status !== 200) {
-      return NextResponse.json(
+      log("warn", "api_keys_list_access_denied", {
+        userId,
+        tenantId,
+        status: result.status,
+      });
+
+      return respond(
         { message: result.message },
-        { status: result.status },
+        result.status,
       );
     }
 
-    return NextResponse.json(
-      { keys: result.keys },
-      {
-        headers: { "Cache-Control": "no-store" },
-      },
-    );
-  } catch (error) {
-    console.error("API key list error:", error);
+    log("info", "api_keys_list_completed", {
+      userId,
+      tenantId,
+      keyCount: result.keys.length,
+    });
 
-    return NextResponse.json(
+    return respond({ keys: result.keys });
+  } catch (error) {
+    log("error", "api_keys_list_failed", {
+      error: error instanceof Error
+        ? error.message
+        : String(error),
+    });
+
+    return respond(
       { message: "Could not load API keys." },
-      { status: 500 },
+      500,
     );
   }
 };
 
 export const POST = async (request: Request) => {
-  const session = await getSession();
-  const userId = session?.user?.id;
-  const tenantId = session?.user?.activeTenantId;
+  const { requestId, log } = createRequestLogger(request);
 
-  if (!userId) {
-    return NextResponse.json(
-      { message: "Please log in first." },
-      { status: 401 },
-    );
-  }
+  const respond = (
+    body: unknown,
+    status = 200,
+  ) =>
+    NextResponse.json(body, {
+      status,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Request-Id": requestId,
+      },
+    });
 
-  if (!tenantId) {
-    return NextResponse.json(
-      { message: "Please select an active organization." },
-      { status: 409 },
-    );
-  }
-
-  let body: unknown;
+  log("info", "api_key_creation_requested");
 
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { message: "Invalid request body." },
-      { status: 400 },
-    );
-  }
+    const session = await auth();
+    const userId = session?.user?.id;
+    const tenantId = session?.user?.activeTenantId;
 
-  const parsed = apiKeySchema.safeParse(body);
+    if (!userId) {
+      log("warn", "api_key_creation_unauthorized");
+      return respond(
+        { message: "Please log in first." },
+        401,
+      );
+    }
 
-  if (!parsed.success) {
-    return NextResponse.json(
-      { message: "API key name must be between 2 and 100 characters." },
-      { status: 400 },
-    );
-  }
+    if (!tenantId) {
+      log("warn", "api_key_creation_missing_active_tenant", {
+        userId,
+      });
 
-  try {
+      return respond(
+        { message: "Please select an active organization." },
+        409,
+      );
+    }
+
+    let body: unknown;
+
+    try {
+      body = await request.json();
+    } catch {
+      log("warn", "api_key_creation_invalid_json", {
+        userId,
+        tenantId,
+      });
+
+      return respond(
+        { message: "Invalid request body." },
+        400,
+      );
+    }
+
+    const parsed = apiKeySchema.safeParse(body);
+
+    if (!parsed.success) {
+      log("warn", "api_key_creation_validation_failed", {
+        userId,
+        tenantId,
+      });
+
+      return respond(
+        {
+          message:
+            "API key name must be between 2 and 100 characters.",
+        },
+        400,
+      );
+    }
+
     const result = await prisma.$withTenant(
       userId,
       tenantId,
@@ -170,7 +233,8 @@ export const POST = async (request: Request) => {
 
         const rawKey = createApiKey();
         const keyHash = await hashApiKey(rawKey);
-        const keyLookupHash = createApiKeyLookupHash(rawKey);
+        const keyLookupHash =
+          createApiKeyLookupHash(rawKey);
 
         await tx.apiKey.create({
           data: {
@@ -184,22 +248,41 @@ export const POST = async (request: Request) => {
 
         return {
           status: 201,
-          message: "API key created successfully. Copy and save it now.",
+          message:
+            "API key created successfully. Copy and save it now.",
           apiKey: rawKey,
         } as const;
       },
     );
 
-    return NextResponse.json(result, {
-      status: result.status,
-      headers: { "Cache-Control": "no-store" },
-    });
-  } catch (error) {
-    console.error("API key creation error:", error);
+    if (result.status === 403) {
+      log("warn", "api_key_creation_access_denied", {
+        userId,
+        tenantId,
+      });
+    } else {
+      log("info", "api_key_created", {
+        userId,
+        tenantId,
+        status: result.status,
+      });
+    }
 
-    return NextResponse.json(
-      { message: "Could not create the API key. Please try again." },
-      { status: 500 },
+    // Never log the raw API key.
+    return respond(result, result.status);
+  } catch (error) {
+    log("error", "api_key_creation_failed", {
+      error: error instanceof Error
+        ? error.message
+        : String(error),
+    });
+
+    return respond(
+      {
+        message:
+          "Could not create the API key. Please try again.",
+      },
+      500,
     );
   }
 };

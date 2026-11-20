@@ -98,6 +98,7 @@ model Invitation {
 
   @@index([tenantId, email])
   @@index([expiresAt])
+  @@index([invitedById])
 }
 
 model ApiKey {
@@ -117,6 +118,7 @@ model ApiKey {
   rateLimit ApiKeyRateLimit?
 
   @@index([tenantId])
+  @@index([createdById])
 }
 
 model Event {
@@ -139,6 +141,8 @@ model Event {
   @@index([tenantId, distinctId, occurredAt])
   @@index([tenantId, distinctId, eventName, occurredAt])
   @@index([tenantId, receivedAt])
+  @@index([apiKeyId])
+  @@index([userId])
 }
 
 model EventIngestionRequest {
@@ -201,6 +205,7 @@ model TenantUserActivityDaily {
 
   @@id([tenantId, bucketStart, distinctId])
   @@index([tenantId, distinctId, bucketStart])
+  @@index([tenantId, bucketStart, distinctId])
   @@map("TenantUserActivityDaily")
 }
 

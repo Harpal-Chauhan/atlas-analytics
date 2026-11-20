@@ -1,14 +1,14 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth, signOut } from "@/auth";
-import { prisma } from "@/lib/prisma";
 import ApiKeysPanel from "./ApiKeysPanel";
 import OrganizationSwitcher from "./OrganizationSwitcher";
 import CreateOrganization from "./CreateOrganization";
 import InviteMember from "./InviteMember";
-import AnalyticsOverview from "./AnalyticsOverview";
 import DateRangePicker from "./DateRangePicker";
 import { Suspense } from "react";
+import OrganizationsList from "./OrganizationsList";
+import AnalyticsOverviewLoader from "./AnalyticsOverviewLoader";
 
 type DashboardPageProps = {
   searchParams: Promise<{
@@ -18,10 +18,6 @@ type DashboardPageProps = {
 };
 
 const DashboardPage = async ({ searchParams }: DashboardPageProps) => {
-  const params = await searchParams;
-
-  const startDate = params.startDate;
-  const endDate = params.endDate;
   const session = await auth();
   const userId = session?.user?.id;
 
@@ -30,45 +26,6 @@ const DashboardPage = async ({ searchParams }: DashboardPageProps) => {
   }
 
   const userName = session.user?.name || session.user?.email || "User";
-
-  const organizations = await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`
-      SELECT set_config('app.user_id', ${userId}, true)
-    `;
-
-    const memberships = await tx.membership.findMany({
-      where: { userId },
-      select: { tenantId: true, role: true },
-    });
-
-    const result = [];
-
-    for (const membership of memberships) {
-      await tx.$queryRaw`
-        SELECT set_config('app.tenant_id', ${membership.tenantId}, true)
-      `;
-
-      const tenant = await tx.tenant.findUnique({
-        where: { id: membership.tenantId },
-        select: {
-          id: true,
-          name: true,
-          suspendedAt: true,
-        },
-      });
-
-      if (tenant) {
-        result.push({
-          id: tenant.id,
-          name: tenant.name,
-          role: membership.role,
-          suspended: tenant.suspendedAt !== null,
-        });
-      }
-    }
-
-    return result;
-  });
 
   return (
     <main className="min-h-screen bg-gray-50 text-gray-900">
@@ -122,34 +79,16 @@ const DashboardPage = async ({ searchParams }: DashboardPageProps) => {
 
         <InviteMember />
 
-        <div className="mt-6 rounded-xl border border-gray-200 bg-white p-6">
-          <h2 className="text-lg font-semibold">Your organizations</h2>
-
-          {organizations.length === 0 ? (
-            <p className="mt-2 text-sm text-gray-600">
-              No organizations found for your account.
-            </p>
-          ) : (
-            <div className="mt-4 space-y-3">
-              {organizations.map((organization) => (
-                <div
-                  key={organization.id}
-                  className="rounded-lg border border-gray-200 p-4"
-                >
-                  <h3 className="font-medium">{organization.name}</h3>
-
-                  <p className="mt-1 text-sm text-gray-600">
-                    Role: {organization.role}
-                  </p>
-
-                  <p className="mt-1 text-sm text-gray-600">
-                    Status: {organization.suspended ? "Suspended" : "Active"}
-                  </p>
-                </div>
-              ))}
+        <Suspense
+          fallback={
+            <div className="mt-6 rounded-xl border border-gray-200 bg-white p-6 animate-pulse">
+              <div className="h-6 w-48 rounded bg-gray-200" />
+              <div className="mt-4 h-16 rounded bg-gray-100" />
             </div>
-          )}
-        </div>
+          }
+        >
+          <OrganizationsList userId={userId} />
+        </Suspense>
 
         <ApiKeysPanel />
 
@@ -175,7 +114,7 @@ const DashboardPage = async ({ searchParams }: DashboardPageProps) => {
             </div>
           }
         >
-          <AnalyticsOverview startDate={startDate} endDate={endDate} />
+          <AnalyticsOverviewLoader searchParams={searchParams} />
         </Suspense>
       </section>
     </main>

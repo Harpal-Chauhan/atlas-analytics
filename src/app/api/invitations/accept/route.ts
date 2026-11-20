@@ -5,56 +5,80 @@ import { z } from "zod";
 
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { createRequestLogger } from "@/lib/request-logger";
 
 const acceptSchema = z.object({
     token: z.string().regex(/^[a-f0-9]{64}$/i, "Invalid invitation token."),
 });
 
 export const POST = async (request: Request) => {
-    const session = await auth();
-    const userId = session?.user?.id;
-    const userEmail = session?.user?.email?.toLowerCase();
+    const { requestId, log } = createRequestLogger(request);
 
-    if (!userId || !userEmail) {
-        return NextResponse.json(
-            { message: "Please log in first." },
-            { status: 401 },
-        );
-    }
+    const respond = (
+        data: Record<string, unknown>,
+        status: number,
+    ) => {
+        return NextResponse.json(data, {
+            status,
+            headers: {
+                "Cache-Control": "no-store",
+                "X-Request-Id": requestId,
+            },
+        });
+    };
 
-    let body: unknown;
-
-    try {
-        body = await request.json();
-    } catch {
-        return NextResponse.json(
-            { message: "Invalid request body." },
-            { status: 400 },
-        );
-    }
-
-    const parsed = acceptSchema.safeParse(body);
-
-    if (!parsed.success) {
-        return NextResponse.json(
-            { message: "A valid invitation token is required." },
-            { status: 400 },
-        );
-    }
-
-    const tokenHash = createHash("sha256")
-        .update(parsed.data.token.toLowerCase())
-        .digest("hex");
+    log("info", "invitation_accept_started");
 
     try {
+        const session = await auth();
+        const userId = session?.user?.id;
+        const userEmail = session?.user?.email?.toLowerCase();
+
+        if (!userId || !userEmail) {
+            log("warn", "invitation_accept_unauthorized");
+
+            return respond(
+                { message: "Please log in first." },
+                401,
+            );
+        }
+
+        let body: unknown;
+
+        try {
+            body = await request.json();
+        } catch {
+            log("warn", "invitation_accept_invalid_body");
+
+            return respond(
+                { message: "Invalid request body." },
+                400,
+            );
+        }
+
+        const parsed = acceptSchema.safeParse(body);
+
+        if (!parsed.success) {
+            log("warn", "invitation_accept_invalid_token");
+
+            return respond(
+                { message: "A valid invitation token is required." },
+                400,
+            );
+        }
+
+        const tokenHash = createHash("sha256")
+            .update(parsed.data.token.toLowerCase())
+            .digest("hex");
+
         const result = await prisma.$transaction(async (tx) => {
             await tx.$queryRaw`
-        SELECT set_config('app.user_id', ${userId}, true)
-      `;
+                SELECT set_config('app.user_id', ${userId}, true)
+            `;
 
             await tx.$queryRaw`
-        SELECT set_config('app.invitation_token_hash', ${tokenHash}, true)
-      `;
+                SELECT set_config('app.invitation_token_hash', ${tokenHash}, true)
+            `;
 
             const invitation = await tx.invitation.findUnique({
                 where: { tokenHash },
@@ -91,8 +115,8 @@ export const POST = async (request: Request) => {
             }
 
             await tx.$queryRaw`
-        SELECT set_config('app.tenant_id', ${invitation.tenantId}, true)
-      `;
+                SELECT set_config('app.tenant_id', ${invitation.tenantId}, true)
+            `;
 
             const tenant = await tx.tenant.findUnique({
                 where: { id: invitation.tenantId },
@@ -154,16 +178,26 @@ export const POST = async (request: Request) => {
             };
         });
 
-        return NextResponse.json(result, {
-            status: result.status,
-            headers: { "Cache-Control": "no-store" },
-        });
-    } catch (error) {
-        console.error("Invitation acceptance error:", error);
+        if (result.status === 200) {
+            log("info", "invitation_accept_completed", {
+                organizationId: result.organizationId,
+                status: result.status,
+            });
+        } else {
+            log("warn", "invitation_accept_rejected", {
+                status: result.status,
+            });
+        }
 
-        return NextResponse.json(
+        return respond(result, result.status);
+    } catch (error) {
+        log("error", "invitation_accept_failed", {
+            error: error instanceof Error ? error.message : "Unknown error",
+        });
+
+        return respond(
             { message: "Could not accept the invitation." },
-            { status: 500 },
+            500,
         );
     }
 };

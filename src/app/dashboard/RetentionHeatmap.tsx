@@ -1,68 +1,154 @@
-"use client";
-
-import { useEffect, useState } from "react";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
 import { CsvExportButton } from "./CsvExportButton";
-
-type RetentionWeek = {
-  weekNumber: number;
-  activeUsers: number;
-  retentionRate: number;
-};
-
-type RetentionCohort = {
-  cohortWeek: string;
-  cohortSize: number;
-  weeks: RetentionWeek[];
-};
+import {
+  buildRetentionCohorts,
+  type RetentionCohort,
+  type RetentionRow,
+} from "@/lib/retention";
 
 type RetentionHeatmapProps = {
   startDate: string;
   endDate: string;
 };
 
-const RetentionHeatmap = ({ startDate, endDate }: RetentionHeatmapProps) => {
-  const [cohorts, setCohorts] = useState<RetentionCohort[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+const RetentionHeatmap = async ({
+  startDate,
+  endDate,
+}: RetentionHeatmapProps) => {
+  const session = await auth();
+  const userId = session?.user?.id;
+  const tenantId = session?.user?.activeTenantId;
 
-  useEffect(() => {
-    const loadRetention = async () => {
-      setLoading(true);
-      setError("");
+  if (!userId || !tenantId) {
+    return (
+      <section className="rounded-xl border border-gray-200 bg-white p-6">
+        <p className="text-sm text-gray-500">
+          Please sign in and select an organization to view retention data.
+        </p>
+      </section>
+    );
+  }
 
-      try {
-        const params = new URLSearchParams({
-          startDate,
-          endDate,
-        });
+  const startAt = new Date(`${startDate}T00:00:00.000Z`);
+  const endExclusive = new Date(`${endDate}T00:00:00.000Z`);
 
-        const response = await fetch(
-          `/api/analytics/retention?${params.toString()}`,
-          {
-            method: "GET",
-            credentials: "same-origin",
-            cache: "no-store",
-          },
-        );
+  if (
+    Number.isNaN(startAt.getTime()) ||
+    Number.isNaN(endExclusive.getTime()) ||
+    startAt.toISOString().slice(0, 10) !== startDate ||
+    endExclusive.toISOString().slice(0, 10) !== endDate ||
+    startDate > endDate
+  ) {
+    return (
+      <section className="rounded-xl border border-gray-200 bg-white p-6">
+        <p className="text-sm text-red-600">Invalid date range.</p>
+      </section>
+    );
+  }
 
-        const data = await response.json();
+  endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
 
-        if (!response.ok) {
-          throw new Error(data.message || "Could not load retention data.");
-        }
+  let cohorts: RetentionCohort[];
 
-        setCohorts(data.cohorts);
-      } catch (error) {
-        setError(
-          error instanceof Error ? error.message : "Something went wrong.",
-        );
-      } finally {
-        setLoading(false);
-      }
-    };
+  try {
+    const rows = await prisma.$withTenant(userId, tenantId, async (tx) => {
+      return tx.$queryRaw<RetentionRow[]>`
+          WITH first_signup AS (
+            SELECT
+              "distinctId",
+              MIN("occurredAt") AS "signupAt"
+            FROM "Event"
+            WHERE
+              "tenantId" = ${tenantId}
+              AND "eventName" = 'Sign Up'
+            GROUP BY "distinctId"
+          ),
 
-    void loadRetention();
-  }, [startDate, endDate]);
+          cohort_users AS (
+            SELECT
+              "distinctId",
+              "signupAt",
+              date_trunc(
+                'week',
+                "signupAt" AT TIME ZONE 'UTC'
+              ) AS "cohortWeek"
+            FROM first_signup
+            WHERE
+              "signupAt" >= ${startAt}
+              AND "signupAt" < ${endExclusive}
+          ),
+
+          cohort_sizes AS (
+            SELECT
+              "cohortWeek",
+              COUNT(*)::bigint AS "cohortSize"
+            FROM cohort_users
+            GROUP BY "cohortWeek"
+          ),
+
+activity_weeks AS (
+  SELECT DISTINCT
+    cu."cohortWeek",
+    activity."distinctId",
+    date_trunc(
+      'week',
+      activity."bucketStart" AT TIME ZONE 'UTC'
+    ) AS "activityWeek"
+  FROM "TenantUserActivityDaily" activity
+  JOIN cohort_users cu
+    ON cu."distinctId" = activity."distinctId"
+  WHERE
+    activity."tenantId" = ${tenantId}
+    AND activity."bucketStart" >=
+      date_trunc('day', cu."signupAt" AT TIME ZONE 'UTC')
+      AT TIME ZONE 'UTC'
+    AND activity."bucketStart" < ${endExclusive}
+),
+
+weekly_activity AS (
+  SELECT
+    aw."cohortWeek",
+    (
+      (aw."activityWeek"::date - aw."cohortWeek"::date) / 7
+    )::int AS "weekNumber",
+    COUNT(*)::bigint AS "activeUsers"
+  FROM activity_weeks aw
+  WHERE
+    aw."activityWeek" >= aw."cohortWeek"
+    AND aw."activityWeek" < aw."cohortWeek" + INTERVAL '84 days'
+  GROUP BY
+    aw."cohortWeek",
+    2
+)
+
+          SELECT
+            to_char(wa."cohortWeek", 'YYYY-MM-DD') AS "cohortWeek",
+            wa."weekNumber",
+            cs."cohortSize",
+            wa."activeUsers"
+          FROM weekly_activity wa
+          JOIN cohort_sizes cs
+            ON cs."cohortWeek" = wa."cohortWeek"
+          WHERE wa."weekNumber" BETWEEN 0 AND 11
+          ORDER BY
+            wa."cohortWeek" ASC,
+            wa."weekNumber" ASC
+        `;
+    });
+
+    cohorts = buildRetentionCohorts(rows);
+  } catch (error) {
+    console.error("Retention analytics error:", error);
+
+    return (
+      <section className="rounded-xl border border-gray-200 bg-white p-6">
+        <p className="text-sm text-red-600">
+          Could not load retention analytics.
+        </p>
+      </section>
+    );
+  }
 
   const getRetention = (cohort: RetentionCohort, weekNumber: number) => {
     return cohort.weeks.find((week) => week.weekNumber === weekNumber);
@@ -95,11 +181,7 @@ const RetentionHeatmap = ({ startDate, endDate }: RetentionHeatmapProps) => {
         />
       </div>
 
-      {loading ? (
-        <p className="mt-6 text-sm text-gray-500">Loading retention data...</p>
-      ) : error ? (
-        <p className="mt-6 text-sm text-red-600">{error}</p>
-      ) : cohorts.length === 0 ? (
+      {cohorts.length === 0 ? (
         <p className="mt-6 text-sm text-gray-500">
           No retention cohort data available for this date range.
         </p>
@@ -142,8 +224,20 @@ const RetentionHeatmap = ({ startDate, endDate }: RetentionHeatmapProps) => {
 
                     weekStart.setUTCDate(weekStart.getUTCDate() + index * 7);
 
+                    const weekEndExclusive = new Date(weekStart);
+                    weekEndExclusive.setUTCDate(
+                      weekEndExclusive.getUTCDate() + 7,
+                    );
+
+                    const selectedEndExclusive = new Date(
+                      `${endDate}T00:00:00.000Z`,
+                    );
+                    selectedEndExclusive.setUTCDate(
+                      selectedEndExclusive.getUTCDate() + 1,
+                    );
+
                     const isAvailable =
-                      weekStart <= new Date(`${endDate}T00:00:00.000Z`);
+                      weekEndExclusive <= selectedEndExclusive;
 
                     const rate = week?.retentionRate ?? 0;
 

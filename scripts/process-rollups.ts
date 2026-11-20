@@ -1,6 +1,8 @@
 
 import "dotenv/config";
 import { PrismaClient } from "../src/generated/prisma/client";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const databaseUrl = process.env.DATABASE_URL;
 const appDatabaseUrl = process.env.APP_DATABASE_URL;
@@ -29,7 +31,7 @@ const appDb = new PrismaClient({
     },
 });
 
-const processTenantRollups = async (tenantId: string) => {
+export const processTenantRollups = async (tenantId: string) => {
     return appDb.$transaction(async (tx) => {
         await tx.$queryRaw`
             SELECT set_config('app.tenant_id', ${tenantId}, true)
@@ -175,7 +177,18 @@ const main = async () => {
     }
 };
 
-void main().catch((error) => {
-    console.error("Rollup processing failed:", error);
-    process.exitCode = 1;
-});
+export const disconnectRollupClients = async () => {
+    await appDb.$disconnect();
+    await adminDb.$disconnect();
+};
+
+const isDirectExecution =
+    process.argv[1] &&
+    pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+
+if (isDirectExecution) {
+    void main().catch((error) => {
+        console.error("Rollup processing failed:", error);
+        process.exitCode = 1;
+    });
+}

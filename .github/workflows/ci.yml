@@ -1,0 +1,91 @@
+
+name: ATLAS CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Test and Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: atlas_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d atlas_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/atlas_ci?schema=public
+      APP_DATABASE_URL: postgresql://atlas_app:atlas_app_ci_password@localhost:5432/atlas_ci?schema=public
+      AUTH_SECRET: atlas-ci-test-secret-not-for-production
+      AUTH_URL: http://localhost:3000
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Create restricted database role
+        run: |
+          psql "postgresql://postgres:postgres@localhost:5432/atlas_ci" \
+            -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE atlas_app LOGIN PASSWORD 'atlas_app_ci_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;"
+
+          psql "postgresql://postgres:postgres@localhost:5432/atlas_ci" \
+            -v ON_ERROR_STOP=1 \
+            -c "GRANT CONNECT ON DATABASE atlas_ci TO atlas_app;"
+
+          psql "postgresql://postgres:postgres@localhost:5432/atlas_ci" \
+            -v ON_ERROR_STOP=1 \
+            -c "GRANT USAGE ON SCHEMA public TO atlas_app;"
+
+      - name: Apply database migrations
+        run: npx prisma migrate deploy
+
+      - name: Run automated tests
+        run: npm test
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        run: npm run test:e2e
+
+      - name: Build Next.js application
+        run: npm run build

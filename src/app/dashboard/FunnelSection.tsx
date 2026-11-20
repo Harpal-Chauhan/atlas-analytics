@@ -18,8 +18,9 @@ const FunnelSection = async ({
   const end = new Date(`${endDate}T00:00:00.000Z`);
   end.setUTCDate(end.getUTCDate() + 1);
 
-  const eventRollups = await withTenant(userId, tenantId, async (tx) =>
-    tx.eventDailyRollup.findMany({
+  const availableEventNames = await withTenant(userId, tenantId, async (tx) => {
+    const eventGroups = await tx.eventDailyRollup.groupBy({
+      by: ["eventName"],
       where: {
         tenantId,
         bucketStart: {
@@ -27,15 +28,13 @@ const FunnelSection = async ({
           lt: end,
         },
       },
-      select: {
-        eventName: true,
+      orderBy: {
+        eventName: "asc",
       },
-    }),
-  );
+    });
 
-  const availableEventNames = Array.from(
-    new Set(eventRollups.map((item) => item.eventName)),
-  );
+    return eventGroups.map((item) => item.eventName);
+  });
 
   return (
     <FunnelBuilder

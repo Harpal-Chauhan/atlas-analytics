@@ -9,12 +9,15 @@
     "lint": "eslint",
     "test": "vitest run",
     "rollups": "tsx scripts/process-rollups.ts",
-    "seed:events": "tsx scripts/seed-events.ts"
+    "seed:events": "tsx scripts/seed-events.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "@sentry/nextjs": "^11.15.0",
     "next": "15.5.28",
     "next-auth": "^5.0.0-beta.32",
+    "pg": "^8.23.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "resend": "^6.37.0",
@@ -22,8 +25,10 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
+    "@playwright/test": "^1.65.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

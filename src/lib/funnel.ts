@@ -29,8 +29,12 @@ export const calculateFunnel = (
     throw new Error("Funnel steps must be unique.");
   }
 
-  if (conversionWindowDays < 1) {
-    throw new Error("Conversion window must be at least 1 day.");
+  if (
+    !Number.isInteger(conversionWindowDays) ||
+    conversionWindowDays < 1 ||
+    conversionWindowDays > 30
+  ) {
+    throw new Error("Conversion window must be an integer between 1 and 30 days.");
   }
 
   const eventsByUser = new Map<string, FunnelEvent[]>();
@@ -88,20 +92,20 @@ export const calculateFunnel = (
 
   const totalUsers = reachedCounts[0] ?? 0;
 
-const results = stepNames.map((eventName, index) => {
-  const previousCount =
-    index === 0 ? totalUsers : (reachedCounts[index - 1] ?? 0);
+  const results = stepNames.map((eventName, index) => {
+    const previousCount =
+      index === 0 ? totalUsers : (reachedCounts[index - 1] ?? 0);
 
-  const reachedUsers = reachedCounts[index] ?? 0;
+    const reachedUsers = reachedCounts[index] ?? 0;
 
-  return {
-    eventName,
-    reachedUsers,
-    conversionRate:
-      previousCount === 0 ? 0 : (reachedUsers / previousCount) * 100,
-    dropOff: previousCount - reachedUsers,
-  };
-});
+    return {
+      eventName,
+      reachedUsers,
+      conversionRate:
+        previousCount === 0 ? 0 : (reachedUsers / previousCount) * 100,
+      dropOff: previousCount - reachedUsers,
+    };
+  });
 
   return {
     totalUsers,

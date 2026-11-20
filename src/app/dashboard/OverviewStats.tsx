@@ -39,19 +39,14 @@ const OverviewStats = async ({
         },
       },
       select: {
+        bucketStart: true,
         eventCount: true,
+        uniqueUsers: true,
       },
     });
 
-    const activityMetrics = await tx.$queryRaw<
-      { dau: bigint; wau: bigint; mau: bigint }[]
-    >`
+    const activityMetrics = await tx.$queryRaw<{ wau: bigint; mau: bigint }[]>`
       SELECT
-        COUNT(DISTINCT "distinctId")
-          FILTER (
-            WHERE "bucketStart" = ${selectedEndDate}
-          )::bigint AS "dau",
-
         COUNT(DISTINCT "distinctId")
           FILTER (
             WHERE "bucketStart" >= ${weekStart}
@@ -71,15 +66,18 @@ const OverviewStats = async ({
       BigInt(0),
     );
 
+    const selectedDayRollup = dailyRollups.find(
+      (item) => item.bucketStart.getTime() === selectedEndDate.getTime(),
+    );
+
     const activeUsers = activityMetrics[0] ?? {
-      dau: BigInt(0),
       wau: BigInt(0),
       mau: BigInt(0),
     };
 
     return {
       totalEvents,
-      dau: activeUsers.dau,
+      dau: selectedDayRollup?.uniqueUsers ?? BigInt(0),
       wau: activeUsers.wau,
       mau: activeUsers.mau,
     };

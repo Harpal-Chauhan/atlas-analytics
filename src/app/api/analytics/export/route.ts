@@ -4,6 +4,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { withTenant } from "@/lib/tenant-db";
 import { createCsvRow } from "@/lib/csv";
 import { getDateRange } from "@/app/dashboard/analytics-utils";
+import { createRequestLogger } from "@/lib/request-logger";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +14,16 @@ type FunnelCountRow = {
     reachedUsers: bigint;
 };
 
+type RetentionRow = {
+    cohortWeek: string;
+    cohortSize: bigint;
+    weekNumber: number;
+    activeUsers: bigint;
+};
+
 type CsvRow = string[];
+
+const BATCH_SIZE = 500;
 
 const exportSchema = z.object({
     view: z.enum(["overview", "top-events", "funnel", "retention"]),
@@ -23,39 +33,445 @@ const exportSchema = z.object({
     conversionWindowDays: z.coerce.number().int().min(1).max(30).default(7),
 });
 
-const createCsvStream = (rows: CsvRow[]) => {
-    const encoder = new TextEncoder();
-    let index = 0;
+type ExportOptions = {
+    userId: string;
+    tenantId: string;
+    view: "overview" | "top-events" | "funnel" | "retention";
+    selectedStart: Date;
+    selectedEnd: Date;
+    steps?: string[];
+    conversionWindowDays: number;
+};
 
-    return new ReadableStream<Uint8Array>({
-        pull: (controller) => {
-            const row = rows[index];
+async function* generateCsvRows(
+    options: ExportOptions
+): AsyncGenerator<CsvRow> {
+    const {
+        userId,
+        tenantId,
+        view,
+        selectedStart,
+        selectedEnd,
+        steps,
+        conversionWindowDays,
+    } = options;
 
-            if (!row) {
-                controller.close();
-                return;
-            }
-
-            controller.enqueue(
-                encoder.encode(createCsvRow(row)),
+    // OVERVIEW EXPORT
+    if (view === "overview") {
+        const data = await withTenant(userId, tenantId, async (tx) => {
+            const dauStart = new Date(
+                selectedEnd.getTime() - 1 * 86400000
             );
 
-            index += 1;
+            const wauStart = new Date(
+                selectedEnd.getTime() - 7 * 86400000
+            );
+
+            const mauStart = new Date(
+                selectedEnd.getTime() - 30 * 86400000
+            );
+
+            const [totalEvents, activeUserCounts] = await Promise.all([
+                tx.tenantDailyRollup.aggregate({
+                    where: {
+                        tenantId,
+                        bucketStart: {
+                            gte: selectedStart,
+                            lt: selectedEnd,
+                        },
+                    },
+                    _sum: {
+                        eventCount: true,
+                    },
+                }),
+
+                tx.$queryRaw<{
+                    dau: bigint;
+                    wau: bigint;
+                    mau: bigint;
+                }[]>(Prisma.sql`
+                    SELECT
+                        COUNT(DISTINCT "distinctId") FILTER (
+                            WHERE "bucketStart" >= ${dauStart}
+                        ) AS dau,
+                        COUNT(DISTINCT "distinctId") FILTER (
+                            WHERE "bucketStart" >= ${wauStart}
+                        ) AS wau,
+                        COUNT(DISTINCT "distinctId") FILTER (
+                            WHERE "bucketStart" >= ${mauStart}
+                        ) AS mau
+                    FROM "TenantUserActivityDaily"
+                    WHERE
+                        "tenantId" = ${tenantId}
+                        AND "bucketStart" >= ${mauStart}
+                        AND "bucketStart" < ${selectedEnd}
+                `),
+            ]);
+
+            const counts = activeUserCounts[0] ?? {
+                dau: BigInt(0),
+                wau: BigInt(0),
+                mau: BigInt(0),
+            };
+
+            return [
+                ["Metric", "Value"],
+                ["Total Events", String(totalEvents._sum.eventCount ?? 0)],
+                ["DAU", String(counts.dau)],
+                ["WAU", String(counts.wau)],
+                ["MAU", String(counts.mau)],
+            ];
+        });
+
+        for (const row of data) {
+            yield row;
+        }
+
+        return;
+    }
+
+    // TOP EVENTS EXPORT
+    if (view === "top-events") {
+        const data = await withTenant(userId, tenantId, async (tx) => {
+            const grouped = await tx.eventDailyRollup.groupBy({
+                by: ["eventName"],
+                where: {
+                    tenantId,
+                    bucketStart: {
+                        gte: selectedStart,
+                        lt: selectedEnd,
+                    },
+                },
+                _sum: {
+                    eventCount: true,
+                },
+                orderBy: {
+                    _sum: {
+                        eventCount: "desc",
+                    },
+                },
+                take: 5,
+            });
+
+            return [
+                ["Event Name", "Event Count"],
+                ...grouped.map((event) => [
+                    event.eventName,
+                    String(event._sum.eventCount ?? 0),
+                ]),
+            ];
+        });
+
+        for (const row of data) {
+            yield row;
+        }
+
+        return;
+    }
+
+    // FUNNEL EXPORT
+    if (view === "funnel") {
+        const requestedSteps = steps!;
+
+        const data = await withTenant(userId, tenantId, async (tx) => {
+            const requestedStepValues = Prisma.join(
+                requestedSteps.map((eventName, index) =>
+                    Prisma.sql`(${index + 1}, ${eventName})`
+                )
+            );
+
+            const funnelRows = await tx.$queryRaw<FunnelCountRow[]>(
+                Prisma.sql`
+                    WITH RECURSIVE requested_steps(
+                        "stepNumber",
+                        "eventName"
+                    ) AS (
+                        VALUES ${requestedStepValues}
+                    ),
+
+                    first_step_events AS (
+                        SELECT
+                            e."distinctId",
+                            MIN(e."occurredAt") AS "cohortAt"
+                        FROM "Event" e
+                        WHERE
+                            e."tenantId" = ${tenantId}
+                            AND e."eventName" = ${requestedSteps[0]}
+                            AND e."occurredAt" >= ${selectedStart}
+                            AND e."occurredAt" < ${selectedEnd}
+                        GROUP BY e."distinctId"
+                    ),
+
+                    funnel_progress AS (
+                        SELECT
+                            f."distinctId",
+                            1::int AS "stepNumber",
+                            f."cohortAt" AS "stepAt",
+                            f."cohortAt"
+                        FROM first_step_events f
+
+                        UNION ALL
+
+                        SELECT
+                            fp."distinctId",
+                            rs."stepNumber"::int,
+                            next_event."occurredAt",
+                            fp."cohortAt"
+                        FROM funnel_progress fp
+
+                        JOIN requested_steps rs
+                            ON rs."stepNumber" = fp."stepNumber" + 1
+
+                        CROSS JOIN LATERAL (
+                            SELECT e."occurredAt"
+                            FROM "Event" e
+                            WHERE
+                                e."tenantId" = ${tenantId}
+                                AND e."distinctId" = fp."distinctId"
+                                AND e."eventName" = rs."eventName"
+                                AND e."occurredAt" > fp."stepAt"
+                                AND e."occurredAt" <=
+                                    fp."cohortAt" +
+                                    (${conversionWindowDays} * INTERVAL '1 day')
+                            ORDER BY e."occurredAt" ASC
+                            LIMIT 1
+                        ) next_event
+                    ),
+
+                    step_counts AS (
+                        SELECT
+                            "stepNumber",
+                            COUNT(*)::bigint AS "reachedUsers"
+                        FROM funnel_progress
+                        GROUP BY "stepNumber"
+                    )
+
+                    SELECT
+                        rs."stepNumber",
+                        COALESCE(
+                            sc."reachedUsers",
+                            0
+                        )::bigint AS "reachedUsers"
+                    FROM requested_steps rs
+                    LEFT JOIN step_counts sc
+                        ON sc."stepNumber" = rs."stepNumber"
+                    ORDER BY rs."stepNumber"
+                `
+            );
+
+            const counts = funnelRows.map((row) =>
+                Number(row.reachedUsers)
+            );
+
+            const totalUsers = counts[0] ?? 0;
+
+            const rows: CsvRow[] = [
+                [
+                    "Step",
+                    "Event Name",
+                    "Reached Users",
+                    "Conversion Rate (%)",
+                    "Drop-off",
+                ],
+            ];
+
+            requestedSteps.forEach((eventName, index) => {
+                const reachedUsers = counts[index] ?? 0;
+
+                const previousCount =
+                    index === 0 ? totalUsers : counts[index - 1] ?? 0;
+
+                const conversionRate =
+                    previousCount === 0
+                        ? 0
+                        : (reachedUsers / previousCount) * 100;
+
+                rows.push([
+                    String(index + 1),
+                    eventName,
+                    String(reachedUsers),
+                    conversionRate.toFixed(2),
+                    String(previousCount - reachedUsers),
+                ]);
+            });
+
+            return rows;
+        });
+
+        for (const row of data) {
+            yield row;
+        }
+
+        return;
+    }
+
+    // RETENTION EXPORT
+    if (view === "retention") {
+        yield [
+            "Cohort Week",
+            "Cohort Size",
+            "Week Number",
+            "Active Users",
+            "Retention Rate (%)",
+        ];
+
+        let offset = 0;
+
+        while (true) {
+            const batch = await withTenant(userId, tenantId, async (tx) => {
+                return tx.$queryRaw<RetentionRow[]>(Prisma.sql`
+                    WITH first_signup AS (
+                        SELECT
+                            e."distinctId",
+                            MIN(e."occurredAt") AS "signupAt"
+                        FROM "Event" e
+                        WHERE
+                            e."tenantId" = ${tenantId}
+                            AND e."eventName" = 'Sign Up'
+                            AND e."occurredAt" >= ${selectedStart}
+                            AND e."occurredAt" < ${selectedEnd}
+                        GROUP BY e."distinctId"
+                    ),
+
+                    cohort_users AS (
+                        SELECT
+                            fs."distinctId",
+                            fs."signupAt",
+                            DATE_TRUNC(
+                                'week',
+                                fs."signupAt" AT TIME ZONE 'UTC'
+                            ) AS "cohortWeek"
+                        FROM first_signup fs
+                    ),
+
+                    cohort_sizes AS (
+                        SELECT
+                            cu."cohortWeek",
+                            COUNT(*)::bigint AS "cohortSize"
+                        FROM cohort_users cu
+                        GROUP BY cu."cohortWeek"
+                    ),
+
+                    weekly_activity AS (
+                        SELECT
+                            cu."cohortWeek",
+                            FLOOR(
+                                EXTRACT(
+                                    EPOCH FROM (
+                                        DATE_TRUNC(
+                                            'week',
+                                            e."occurredAt" AT TIME ZONE 'UTC'
+                                        ) - cu."cohortWeek"
+                                    )
+                                ) / 604800
+                            )::int AS "weekNumber",
+                            COUNT(DISTINCT cu."distinctId")::bigint AS "activeUsers"
+                        FROM cohort_users cu
+                        JOIN "Event" e
+                            ON e."tenantId" = ${tenantId}
+                            AND e."distinctId" = cu."distinctId"
+                            AND e."occurredAt" >= cu."signupAt"
+                            AND e."occurredAt" < ${selectedEnd}
+                        GROUP BY
+                            cu."cohortWeek",
+                            "weekNumber"
+                    )
+
+                    SELECT
+                        TO_CHAR(cs."cohortWeek", 'YYYY-MM-DD') AS "cohortWeek",
+                        cs."cohortSize",
+                        weeks.week_number AS "weekNumber",
+                        COALESCE(wa."activeUsers", 0)::bigint AS "activeUsers"
+                    FROM cohort_sizes cs
+                    CROSS JOIN generate_series(0, 11) AS weeks(week_number)
+                    LEFT JOIN weekly_activity wa
+                        ON wa."cohortWeek" = cs."cohortWeek"
+                        AND wa."weekNumber" = weeks.week_number
+                    ORDER BY
+                        cs."cohortWeek",
+                        weeks.week_number
+                    LIMIT ${BATCH_SIZE}
+                    OFFSET ${offset}
+                `);
+            });
+
+            if (batch.length === 0) {
+                break;
+            }
+
+            for (const row of batch) {
+                const cohortSize = Number(row.cohortSize);
+                const activeUsers = Number(row.activeUsers);
+
+                yield [
+                    row.cohortWeek,
+                    String(cohortSize),
+                    String(row.weekNumber),
+                    String(activeUsers),
+                    cohortSize > 0
+                        ? ((activeUsers / cohortSize) * 100).toFixed(2)
+                        : "0.00",
+                ];
+            }
+
+            offset += batch.length;
+
+            if (batch.length < BATCH_SIZE) {
+                break;
+            }
+        }
+    }
+}
+
+const createCsvStream = (rows: AsyncGenerator<CsvRow>) => {
+    const encoder = new TextEncoder();
+
+    return new ReadableStream<Uint8Array>({
+        async pull(controller) {
+            try {
+                const result = await rows.next();
+
+                if (result.done) {
+                    controller.close();
+                    return;
+                }
+
+                controller.enqueue(
+                    encoder.encode(createCsvRow(result.value)),
+                );
+            } catch (error) {
+                controller.error(error);
+            }
+        },
+
+        async cancel() {
+            await rows.return(undefined);
         },
     });
 };
 
 export const GET = async (request: Request) => {
+    const { requestId, log } = createRequestLogger(request);
+
+    const respond = (body: object, status: number) =>
+        Response.json(body, {
+            status,
+            headers: {
+                "X-Request-Id": requestId,
+                "Cache-Control": "no-store",
+            },
+        });
+
+    log("info", "analytics_export_started");
+
     try {
         const session = await auth();
         const userId = session?.user?.id;
         const tenantId = session?.user?.activeTenantId;
 
         if (!userId || !tenantId) {
-            return Response.json(
-                { error: "Unauthorized." },
-                { status: 401 },
-            );
+            log("warn", "analytics_export_unauthorized");
+            return respond({ error: "Unauthorized." }, 401);
         }
 
         const url = new URL(request.url);
@@ -70,9 +486,10 @@ export const GET = async (request: Request) => {
         });
 
         if (!parsed.success) {
-            return Response.json(
+            log("warn", "analytics_export_invalid_parameters");
+            return respond(
                 { error: "Invalid export parameters." },
-                { status: 400 },
+                400,
             );
         }
 
@@ -86,12 +503,18 @@ export const GET = async (request: Request) => {
 
         if (
             view === "funnel" &&
-            (!steps || steps.length < 2 || steps.length > 6 ||
+            (!steps ||
+                steps.length < 2 ||
+                steps.length > 6 ||
                 new Set(steps).size !== steps.length)
         ) {
-            return Response.json(
+            log("warn", "analytics_export_invalid_funnel_steps", {
+                stepCount: steps?.length ?? 0,
+            });
+
+            return respond(
                 { error: "Funnel requires 2 to 6 unique steps." },
-                { status: 400 },
+                400,
             );
         }
 
@@ -104,374 +527,42 @@ export const GET = async (request: Request) => {
             selectedEnd.getTime() - 86400000,
         ).toISOString().slice(0, 10);
 
-        const rows: CsvRow[] = [];
-
-        await withTenant(userId, tenantId, async (tx) => {
-            if (view === "overview") {
-                const [totalEvents, dailyUsers] = await Promise.all([
-                    tx.tenantDailyRollup.aggregate({
-                        where: {
-                            tenantId,
-                            bucketStart: {
-                                gte: selectedStart,
-                                lt: selectedEnd,
-                            },
-                        },
-                        _sum: {
-                            eventCount: true,
-                        },
-                    }),
-                    tx.tenantUserActivityDaily.findMany({
-                        where: {
-                            tenantId,
-                            bucketStart: {
-                                gte: new Date(
-                                    selectedEnd.getTime() - 29 * 86400000,
-                                ),
-                                lt: selectedEnd,
-                            },
-                        },
-                        select: {
-                            bucketStart: true,
-                            distinctId: true,
-                        },
-                    }),
-                ]);
-
-                const activeUsers = new Map<string, Set<string>>();
-
-                for (const row of dailyUsers) {
-                    const date = row.bucketStart
-                        .toISOString()
-                        .slice(0, 10);
-
-                    const users =
-                        activeUsers.get(date) ?? new Set<string>();
-
-                    users.add(row.distinctId);
-                    activeUsers.set(date, users);
-                }
-
-                const dauDate = new Date(
-                    selectedEnd.getTime() - 86400000,
-                ).toISOString().slice(0, 10);
-
-                const dau = activeUsers.get(dauDate)?.size ?? 0;
-
-                const wauUsers = new Set<string>();
-                const mauUsers = new Set<string>();
-
-                for (const row of dailyUsers) {
-                    const daysAgo = Math.floor(
-                        (selectedEnd.getTime() - row.bucketStart.getTime()) /
-                        86400000,
-                    );
-
-                    if (daysAgo <= 7) {
-                        wauUsers.add(row.distinctId);
-                    }
-
-                    if (daysAgo <= 30) {
-                        mauUsers.add(row.distinctId);
-                    }
-                }
-
-                rows.push(
-                    ["Metric", "Value"],
-                    [
-                        "Total Events",
-                        String(totalEvents._sum.eventCount ?? 0),
-                    ],
-                    ["DAU", String(dau)],
-                    ["WAU", String(wauUsers.size)],
-                    ["MAU", String(mauUsers.size)],
-                );
-            }
-
-            if (view === "top-events") {
-                const grouped = await tx.eventDailyRollup.groupBy({
-                    by: ["eventName"],
-                    where: {
-                        tenantId,
-                        bucketStart: {
-                            gte: selectedStart,
-                            lt: selectedEnd,
-                        },
-                    },
-                    _sum: {
-                        eventCount: true,
-                    },
-                    orderBy: {
-                        _sum: {
-                            eventCount: "desc",
-                        },
-                    },
-                    take: 5,
-                });
-
-                rows.push(["Event Name", "Event Count"]);
-
-                for (const event of grouped) {
-                    rows.push([
-                        event.eventName,
-                        String(event._sum.eventCount ?? 0),
-                    ]);
-                }
-            }
-
-            if (view === "funnel") {
-                const requestedSteps = steps!;
-
-                const requestedStepValues = Prisma.join(
-                    requestedSteps.map((eventName, index) =>
-                        Prisma.sql`(${index + 1}, ${eventName})`,
-                    ),
-                );
-
-                const funnelRows = await tx.$queryRaw<FunnelCountRow[]>(
-                    Prisma.sql`
-                        WITH RECURSIVE requested_steps(
-                            "stepNumber",
-                            "eventName"
-                        ) AS (
-                            VALUES ${requestedStepValues}
-                        ),
-
-                        first_step_events AS (
-                            SELECT
-                                e."distinctId",
-                                MIN(e."occurredAt") AS "cohortAt"
-                            FROM "Event" e
-                            WHERE
-                                e."tenantId" = ${tenantId}
-                                AND e."eventName" = ${requestedSteps[0]}
-                                AND e."occurredAt" >= ${selectedStart}
-                                AND e."occurredAt" < ${selectedEnd}
-                            GROUP BY e."distinctId"
-                        ),
-
-                        funnel_progress AS (
-                            SELECT
-                                f."distinctId",
-                                1::int AS "stepNumber",
-                                f."cohortAt" AS "stepAt",
-                                f."cohortAt"
-                            FROM first_step_events f
-
-                            UNION ALL
-
-                            SELECT
-                                fp."distinctId",
-                                rs."stepNumber"::int,
-                                next_event."occurredAt",
-                                fp."cohortAt"
-                            FROM funnel_progress fp
-
-                            JOIN requested_steps rs
-                                ON rs."stepNumber" = fp."stepNumber" + 1
-
-                            CROSS JOIN LATERAL (
-                                SELECT e."occurredAt"
-                                FROM "Event" e
-                                WHERE
-                                    e."tenantId" = ${tenantId}
-                                    AND e."distinctId" = fp."distinctId"
-                                    AND e."eventName" = rs."eventName"
-                                    AND e."occurredAt" > fp."stepAt"
-                                    AND e."occurredAt" <=
-                                        fp."cohortAt" +
-                                        (${conversionWindowDays} * INTERVAL '1 day')
-                                ORDER BY e."occurredAt" ASC
-                                LIMIT 1
-                            ) next_event
-                        ),
-
-                        step_counts AS (
-                            SELECT
-                                "stepNumber",
-                                COUNT(*)::bigint AS "reachedUsers"
-                            FROM funnel_progress
-                            GROUP BY "stepNumber"
-                        )
-
-                        SELECT
-                            rs."stepNumber",
-                            COALESCE(
-                                sc."reachedUsers",
-                                0
-                            )::bigint AS "reachedUsers"
-                        FROM requested_steps rs
-                        LEFT JOIN step_counts sc
-                            ON sc."stepNumber" = rs."stepNumber"
-                        ORDER BY rs."stepNumber"
-                    `,
-                );
-
-                const counts = funnelRows.map((row) =>
-                    Number(row.reachedUsers),
-                );
-
-                const totalUsers = counts[0] ?? 0;
-
-                rows.push([
-                    "Step",
-                    "Event Name",
-                    "Reached Users",
-                    "Conversion Rate (%)",
-                    "Drop-off",
-                ]);
-
-                requestedSteps.forEach((eventName, index) => {
-                    const reachedUsers = counts[index] ?? 0;
-
-                    const previousCount =
-                        index === 0
-                            ? totalUsers
-                            : counts[index - 1] ?? 0;
-
-                    const conversionRate =
-                        previousCount === 0
-                            ? 0
-                            : (reachedUsers / previousCount) * 100;
-
-                    rows.push([
-                        String(index + 1),
-                        eventName,
-                        String(reachedUsers),
-                        conversionRate.toFixed(2),
-                        String(previousCount - reachedUsers),
-                    ]);
-                });
-            }
-
-            if (view === "retention") {
-                const activity = await tx.tenantUserActivityDaily.findMany({
-                    where: {
-                        tenantId,
-                        bucketStart: {
-                            gte: new Date(
-                                selectedStart.getTime() - 84 * 86400000,
-                            ),
-                            lt: selectedEnd,
-                        },
-                    },
-                    select: {
-                        distinctId: true,
-                        bucketStart: true,
-                    },
-                    orderBy: {
-                        bucketStart: "asc",
-                    },
-                });
-
-                const firstActivity = new Map<string, Date>();
-
-                for (const row of activity) {
-                    const previous = firstActivity.get(row.distinctId);
-
-                    if (!previous || row.bucketStart < previous) {
-                        firstActivity.set(row.distinctId, row.bucketStart);
-                    }
-                }
-
-                const cohorts = new Map<
-                    string,
-                    {
-                        users: Set<string>;
-                        active: Map<number, Set<string>>;
-                    }
-                >();
-
-                for (const row of activity) {
-                    const firstDate = firstActivity.get(row.distinctId);
-
-                    if (!firstDate || firstDate < selectedStart) {
-                        continue;
-                    }
-
-                    const cohortDate = new Date(firstDate);
-
-                    cohortDate.setUTCDate(
-                        cohortDate.getUTCDate() - cohortDate.getUTCDay(),
-                    );
-
-                    cohortDate.setUTCHours(0, 0, 0, 0);
-
-                    const cohortKey = cohortDate
-                        .toISOString()
-                        .slice(0, 10);
-
-                    const weekNumber = Math.floor(
-                        (row.bucketStart.getTime() - cohortDate.getTime()) /
-                        (7 * 86400000),
-                    );
-
-                    if (weekNumber < 0 || weekNumber > 11) {
-                        continue;
-                    }
-
-                    const cohort = cohorts.get(cohortKey) ?? {
-                        users: new Set<string>(),
-                        active: new Map<number, Set<string>>(),
-                    };
-
-                    cohort.users.add(row.distinctId);
-
-                    const users =
-                        cohort.active.get(weekNumber) ?? new Set<string>();
-
-                    users.add(row.distinctId);
-                    cohort.active.set(weekNumber, users);
-                    cohorts.set(cohortKey, cohort);
-                }
-
-                rows.push([
-                    "Cohort Week",
-                    "Cohort Size",
-                    "Week Number",
-                    "Active Users",
-                    "Retention Rate (%)",
-                ]);
-
-                for (const [cohortWeek, cohort] of cohorts) {
-                    for (let week = 0; week <= 11; week += 1) {
-                        const activeUsers =
-                            cohort.active.get(week)?.size ?? 0;
-
-                        rows.push([
-                            cohortWeek,
-                            String(cohort.users.size),
-                            String(week),
-                            String(activeUsers),
-                            cohort.users.size > 0
-                                ? (
-                                    (activeUsers / cohort.users.size) * 100
-                                ).toFixed(2)
-                                : "0.00",
-                        ]);
-                    }
-                }
-            }
+        const csvRows = generateCsvRows({
+            userId,
+            tenantId,
+            view,
+            selectedStart,
+            selectedEnd,
+            steps,
+            conversionWindowDays,
         });
 
-        const filename =
-            `atlas-${view}-${startLabel}-${endLabel}.csv`;
+        const filename = `atlas-${view}-${startLabel}-${endLabel}.csv`;
 
-        return new Response(createCsvStream(rows), {
+        log("info", "analytics_export_stream_started", {
+            view,
+            tenantId,
+            startDate: startLabel,
+            endDate: endLabel,
+        });
+
+        return new Response(createCsvStream(csvRows), {
             headers: {
                 "Content-Type": "text/csv; charset=utf-8",
-                "Content-Disposition":
-                    `attachment; filename="${filename}"`,
+                "Content-Disposition": `attachment; filename="${filename}"`,
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
+                "X-Request-Id": requestId,
             },
         });
     } catch (error) {
-        console.error("Analytics CSV export failed:", error);
+        log("error", "analytics_export_failed", {
+            error: error instanceof Error ? error.message : String(error),
+        });
 
-        return Response.json(
+        return respond(
             { error: "Unable to export analytics." },
-            { status: 500 },
+            500,
         );
     }
 };

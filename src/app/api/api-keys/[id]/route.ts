@@ -1,37 +1,75 @@
 
 import { NextResponse } from "next/server";
+import { z } from "zod";
+
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { createRequestLogger } from "@/lib/request-logger";
+
+const paramsSchema = z.object({
+    id: z.string().trim().min(1).max(128),
+});
 
 type RouteContext = {
     params: Promise<{ id: string }>;
 };
 
 export const PATCH = async (
-    _request: Request,
+    request: Request,
     context: RouteContext,
 ) => {
-    const session = await auth();
-    const userId = session?.user?.id;
-    const tenantId = session?.user?.activeTenantId;
+    const { requestId, log } = createRequestLogger(request);
 
-    if (!userId) {
-        return NextResponse.json(
-            { message: "Please log in first." },
-            { status: 401 },
-        );
-    }
+    const respond = (body: unknown, status = 200) =>
+        NextResponse.json(body, {
+            status,
+            headers: {
+                "Cache-Control": "no-store",
+                "X-Request-Id": requestId,
+            },
+        });
 
-    if (!tenantId) {
-        return NextResponse.json(
-            { message: "Please select an active organization." },
-            { status: 409 },
-        );
-    }
-
-    const { id } = await context.params;
+    log("info", "api_key_revocation_requested");
 
     try {
+        const params = await context.params;
+        const parsedParams = paramsSchema.safeParse(params);
+
+        if (!parsedParams.success) {
+            log("warn", "api_key_revocation_invalid_id");
+
+            return respond(
+                { message: "Invalid API key ID." },
+                400,
+            );
+        }
+
+        const { id } = parsedParams.data;
+
+        const session = await auth();
+        const userId = session?.user?.id;
+        const tenantId = session?.user?.activeTenantId;
+
+        if (!userId) {
+            log("warn", "api_key_revocation_unauthorized");
+
+            return respond(
+                { message: "Please log in first." },
+                401,
+            );
+        }
+
+        if (!tenantId) {
+            log("warn", "api_key_revocation_missing_active_tenant", {
+                userId,
+            });
+
+            return respond(
+                { message: "Please select an active organization." },
+                409,
+            );
+        }
+
         const result = await prisma.$withTenant(
             userId,
             tenantId,
@@ -108,16 +146,35 @@ export const PATCH = async (
             },
         );
 
-        return NextResponse.json(
+        if (result.status === 200) {
+            log("info", "api_key_revoked", {
+                userId,
+                tenantId,
+                apiKeyId: id,
+            });
+        } else {
+            log("warn", "api_key_revocation_not_completed", {
+                userId,
+                tenantId,
+                apiKeyId: id,
+                status: result.status,
+            });
+        }
+
+        return respond(
             { message: result.message },
-            { status: result.status },
+            result.status,
         );
     } catch (error) {
-        console.error("API key revocation error:", error);
+        log("error", "api_key_revocation_failed", {
+            error: error instanceof Error
+                ? error.message
+                : String(error),
+        });
 
-        return NextResponse.json(
+        return respond(
             { message: "Could not revoke the API key." },
-            { status: 500 },
+            500,
         );
     }
 };

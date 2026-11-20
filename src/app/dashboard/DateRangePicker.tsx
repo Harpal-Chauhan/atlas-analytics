@@ -4,9 +4,9 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 const formatDate = (date: Date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
 
   return `${year}-${month}-${day}`;
 };
@@ -15,7 +15,7 @@ const getDateRange = (days: number) => {
   const endDate = new Date();
   const startDate = new Date();
 
-  startDate.setDate(startDate.getDate() - (days - 1));
+  startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
 
   return {
     startDate: formatDate(startDate),
@@ -70,7 +70,7 @@ const DateRangePicker = () => {
     params.set("startDate", start);
     params.set("endDate", end);
 
-    router.replace(`${pathname}?${params.toString()}`);
+    router.push(`${pathname}?${params.toString()}`);
   };
 
   const handlePresetChange = (value: string) => {

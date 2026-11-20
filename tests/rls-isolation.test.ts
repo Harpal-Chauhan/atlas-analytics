@@ -541,8 +541,17 @@ describe("PostgreSQL tenant isolation", () => {
     }, 30000);
 
 
+
+
     it("restricts special lookup policies to the matching user, API key, and invitation", async () => {
+        const testStartedAt = Date.now();
         const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+        const checkpoint = (label: string) => {
+            console.log(
+                `${label}: ${((Date.now() - testStartedAt) / 1000).toFixed(2)} seconds`,
+            );
+        };
 
         let tenantAId: string | undefined;
         let tenantBId: string | undefined;
@@ -550,6 +559,8 @@ describe("PostgreSQL tenant isolation", () => {
         let userBId: string | undefined;
 
         try {
+            checkpoint("Creating user A");
+
             const userA = await adminDb.user.create({
                 data: {
                     email: `lookup-a-${suffix}@example.com`,
@@ -558,6 +569,8 @@ describe("PostgreSQL tenant isolation", () => {
             });
             userAId = userA.id;
 
+            checkpoint("Creating user B");
+
             const userB = await adminDb.user.create({
                 data: {
                     email: `lookup-b-${suffix}@example.com`,
@@ -565,6 +578,8 @@ describe("PostgreSQL tenant isolation", () => {
                 },
             });
             userBId = userB.id;
+
+            checkpoint("Both users created");
 
             const tenantA = await adminDb.tenant.create({
                 data: {
@@ -582,13 +597,29 @@ describe("PostgreSQL tenant isolation", () => {
             });
             tenantBId = tenantB.id;
 
+            checkpoint("Both tenants created");
+
             await adminDb.membership.createMany({
                 data: [
-                    { userId: userA.id, tenantId: tenantA.id, role: "OWNER" },
-                    { userId: userA.id, tenantId: tenantB.id, role: "VIEWER" },
-                    { userId: userB.id, tenantId: tenantB.id, role: "OWNER" },
+                    {
+                        userId: userA.id,
+                        tenantId: tenantA.id,
+                        role: "OWNER",
+                    },
+                    {
+                        userId: userA.id,
+                        tenantId: tenantB.id,
+                        role: "VIEWER",
+                    },
+                    {
+                        userId: userB.id,
+                        tenantId: tenantB.id,
+                        role: "OWNER",
+                    },
                 ],
             });
+
+            checkpoint("Memberships created");
 
             const apiKeyA = await adminDb.apiKey.create({
                 data: {
@@ -609,6 +640,8 @@ describe("PostgreSQL tenant isolation", () => {
                     keyLookupHash: `lookup-hash-b-${suffix}`,
                 },
             });
+
+            checkpoint("API keys created");
 
             const invitationA = await adminDb.invitation.create({
                 data: {
@@ -632,14 +665,20 @@ describe("PostgreSQL tenant isolation", () => {
                 },
             });
 
+            checkpoint("Invitations created");
+
             const results = await appDb.$transaction(async (tx) => {
                 await tx.$queryRaw`
                     SELECT set_config('app.user_id', ${userA.id}, true)
                 `;
 
+                checkpoint("Before Membership query");
+
                 const memberships = await tx.$queryRaw<
                     Array<{ userId: string; tenantId: string }>
                 >`SELECT * FROM "Membership"`;
+
+                checkpoint("Membership query completed");
 
                 await tx.$queryRaw`
                     SELECT set_config(
@@ -653,6 +692,8 @@ describe("PostgreSQL tenant isolation", () => {
                     Array<{ id: string }>
                 >`SELECT * FROM "ApiKey"`;
 
+                checkpoint("API key query completed");
+
                 await tx.$queryRaw`
                     SELECT set_config(
                         'app.invitation_token_hash',
@@ -665,33 +706,76 @@ describe("PostgreSQL tenant isolation", () => {
                     Array<{ id: string }>
                 >`SELECT * FROM "Invitation"`;
 
-                return { memberships, apiKeys, invitations };
+                checkpoint("Invitation query completed");
+
+                return {
+                    memberships,
+                    apiKeys,
+                    invitations,
+                };
             });
+
+            checkpoint("Transaction completed");
 
             expect(results.memberships).toHaveLength(2);
             expect(
-                results.memberships.every((row) => row.userId === userA.id),
+                results.memberships.every(
+                    (row) => row.userId === userA.id,
+                ),
             ).toBe(true);
 
             expect(results.apiKeys).toHaveLength(1);
             expect(results.apiKeys[0]?.id).toBe(apiKeyB.id);
-            expect(results.apiKeys.some((row) => row.id === apiKeyA.id)).toBe(false);
+            expect(
+                results.apiKeys.some((row) => row.id === apiKeyA.id),
+            ).toBe(false);
 
             expect(results.invitations).toHaveLength(1);
             expect(results.invitations[0]?.id).toBe(invitationB.id);
             expect(
-                results.invitations.some((row) => row.id === invitationA.id),
+                results.invitations.some(
+                    (row) => row.id === invitationA.id,
+                ),
             ).toBe(false);
+
+            checkpoint("Assertions completed");
+
         } finally {
+            checkpoint("Cleanup starting");
+
             const tenantIds = [tenantAId, tenantBId].filter(
                 (id): id is string => Boolean(id),
             );
 
             if (tenantIds.length > 0) {
                 await adminDb.tenant.deleteMany({
-                    where: { id: { in: tenantIds } },
+                    where: {
+                        id: { in: tenantIds },
+                    },
                 });
             }
+
+            checkpoint("Tenant cleanup completed");
+
+            const [remainingApiKeys, remainingInvitations] = await Promise.all([
+                adminDb.apiKey.count({
+                    where: {
+                        tenantId: { in: tenantIds },
+                    },
+                }),
+                adminDb.invitation.count({
+                    where: {
+                        tenantId: { in: tenantIds },
+                    },
+                }),
+            ]);
+
+            console.log({
+                remainingApiKeys,
+                remainingInvitations,
+            });
+
+            checkpoint("Related records count completed");
 
             const userIds = [userAId, userBId].filter(
                 (id): id is string => Boolean(id),
@@ -699,9 +783,15 @@ describe("PostgreSQL tenant isolation", () => {
 
             if (userIds.length > 0) {
                 await adminDb.user.deleteMany({
-                    where: { id: { in: userIds } },
+                    where: {
+                        id: { in: userIds },
+                    },
                 });
             }
+
+            checkpoint("User cleanup completed");
         }
-    }, 30000);
+    }, 60000);
+
+
 });

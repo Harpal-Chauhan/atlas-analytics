@@ -10,6 +10,7 @@ import {
     hashApiKey,
 } from "../src/lib/api-key";
 import { POST } from "../src/app/api/v1/events/route";
+import { subscribeToTenantEvents } from "../src/lib/postgres-listener";
 
 const databaseUrl = process.env.DATABASE_URL;
 const appDatabaseUrl = process.env.APP_DATABASE_URL;
@@ -121,6 +122,7 @@ afterAll(async () => {
 });
 
 describe("Event ingestion API integration", () => {
+
     it("accepts a valid event and stores it", async () => {
         const context = await createTestContext();
         const eventName = `integration_event_${randomUUID()}`;
@@ -179,6 +181,87 @@ describe("Event ingestion API integration", () => {
             expect(eventCount).toBe(1);
         } finally {
             await cleanupTestContext(context);
+        }
+    }, 30000);
+
+    it("delivers live notifications only to the matching tenant", async () => {
+        const tenantA = await createTestContext();
+        const tenantB = await createTestContext();
+
+        const eventName = `live_event_${randomUUID()}`;
+
+        let unsubscribeA: (() => void) | null = null;
+        let unsubscribeB: (() => void) | null = null;
+        let tenantBReceivedNotification = false;
+
+        let resolveNotification!: (event: {
+            tenantId: string;
+            eventCount: number;
+            latestEventAt: string;
+            eventNames: string[];
+        }) => void;
+
+        const notificationPromise = new Promise<{
+            tenantId: string;
+            eventCount: number;
+            latestEventAt: string;
+            eventNames: string[];
+        }>((resolve) => {
+            resolveNotification = resolve;
+        });
+
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+
+        try {
+            unsubscribeA = await subscribeToTenantEvents(
+                tenantA.tenantId,
+                (event) => {
+                    resolveNotification(event);
+                },
+            );
+
+            unsubscribeB = await subscribeToTenantEvents(
+                tenantB.tenantId,
+                () => {
+                    tenantBReceivedNotification = true;
+                },
+            );
+
+            const response = await sendEventRequest(
+                tenantA.apiKey,
+                `live-${randomUUID()}`,
+                createEventPayload(eventName),
+            );
+
+            expect(response.status).toBe(202);
+
+            const notification = await Promise.race([
+                notificationPromise,
+                new Promise<never>((_, reject) => {
+                    timeout = setTimeout(() => {
+                        reject(
+                            new Error("Live notification was not received within 5 seconds."),
+                        );
+                    }, 5000);
+                }),
+            ]);
+
+            expect(notification.tenantId).toBe(tenantA.tenantId);
+            expect(notification.eventCount).toBe(1);
+            expect(notification.eventNames).toContain(eventName);
+            expect(notification.latestEventAt).toBeTruthy();
+
+            await new Promise((resolve) => setTimeout(resolve, 100));
+
+            expect(tenantBReceivedNotification).toBe(false);
+        } finally {
+            if (timeout) clearTimeout(timeout);
+
+            unsubscribeA?.();
+            unsubscribeB?.();
+
+            await cleanupTestContext(tenantA);
+            await cleanupTestContext(tenantB);
         }
     }, 30000);
 

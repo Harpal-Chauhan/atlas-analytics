@@ -5,30 +5,69 @@ import { z } from "zod";
 
 import { hashPassword } from "@/lib/password";
 import { prisma } from "@/lib/prisma";
+import { createRequestLogger } from "@/lib/request-logger";
 
 const signupSchema = z.object({
-    company: z.string().trim().min(2, "Company name must be at least 2 characters.").max(100, "Company name is too long."),
-    name: z.string().trim().min(2, "Full name must be at least 2 characters.").max(100, "Full name is too long."),
-    email: z.string().trim().email("Enter a valid email address.").max(254, "Email address is too long.").transform((value) => value.toLowerCase()),
-    password: z.string().min(8, "Password must be at least 8 characters.").max(128, "Password cannot exceed 128 characters."),
+    company: z.string().trim()
+        .min(2, "Company name must be at least 2 characters.")
+        .max(100, "Company name is too long."),
+    name: z.string().trim()
+        .min(2, "Full name must be at least 2 characters.")
+        .max(100, "Full name is too long."),
+    email: z.string().trim()
+        .email("Enter a valid email address.")
+        .max(254, "Email address is too long.")
+        .transform((value) => value.toLowerCase()),
+    password: z.string()
+        .min(8, "Password must be at least 8 characters.")
+        .max(128, "Password cannot exceed 128 characters."),
 });
 
 export async function POST(request: Request) {
+    const { requestId, log } = createRequestLogger(request);
+
+    const respond = (
+        data: Record<string, unknown>,
+        status: number,
+    ) => {
+        return NextResponse.json(data, {
+            status,
+            headers: {
+                "Cache-Control": "no-store",
+                "X-Request-Id": requestId,
+            },
+        });
+    };
+
+    log("info", "signup_started");
+
     let body: unknown;
 
     try {
         body = await request.json();
     } catch {
-        return NextResponse.json(
+        log("warn", "signup_invalid_request_body");
+
+        return respond(
             { message: "Invalid request. Please check your form and try again." },
-            { status: 400 },
+            400,
         );
     }
 
     const result = signupSchema.safeParse(body);
 
     if (!result.success) {
-        return NextResponse.json(
+        log("warn", "signup_validation_failed", {
+            invalidFields: [
+                ...new Set(
+                    result.error.issues.map((issue) =>
+                        String(issue.path[0] ?? ""),
+                    ),
+                ),
+            ],
+        });
+
+        return respond(
             {
                 message: result.error.issues[0]?.message ?? "Please check your details.",
                 errors: result.error.issues.map((issue) => ({
@@ -36,7 +75,7 @@ export async function POST(request: Request) {
                     message: issue.message,
                 })),
             },
-            { status: 400 },
+            400,
         );
     }
 
@@ -49,9 +88,11 @@ export async function POST(request: Request) {
         });
 
         if (existingUser) {
-            return NextResponse.json(
+            log("warn", "signup_email_already_registered");
+
+            return respond(
                 { message: "An account with this email already exists." },
-                { status: 409 },
+                409,
             );
         }
 
@@ -68,28 +109,30 @@ export async function POST(request: Request) {
 
         const slug = `${baseSlug}-${randomBytes(4).toString("hex")}`;
 
-        await prisma.$transaction(async (tx) => {
+        const created = await prisma.$transaction(async (tx) => {
             const user = await tx.user.create({
                 data: {
                     name,
                     email,
                     passwordHash,
                 },
+                select: { id: true },
             });
 
-            const tenantId = randomUUID()
+            const tenantId = randomUUID();
 
             await tx.$queryRaw`
                 SELECT set_config('app.tenant_id', ${tenantId}, true)
-            `
+            `;
 
             const tenant = await tx.tenant.create({
                 data: {
                     id: tenantId,
                     name: company,
-                    slug
-                }
-            })
+                    slug,
+                },
+                select: { id: true },
+            });
 
             await tx.membership.create({
                 data: {
@@ -98,11 +141,22 @@ export async function POST(request: Request) {
                     role: "OWNER",
                 },
             });
+
+            return {
+                userId: user.id,
+                organizationId: tenant.id,
+            };
         });
 
-        return NextResponse.json(
+        log("info", "signup_completed", {
+            userId: created.userId,
+            organizationId: created.organizationId,
+            status: 201,
+        });
+
+        return respond(
             { message: "Your account has been created successfully." },
-            { status: 201 },
+            201,
         );
     } catch (error: unknown) {
         if (
@@ -111,17 +165,25 @@ export async function POST(request: Request) {
             "code" in error &&
             error.code === "P2002"
         ) {
-            return NextResponse.json(
-                { message: "This email may already be registered. Please check and try again." },
-                { status: 409 },
+            log("warn", "signup_duplicate_record");
+
+            return respond(
+                {
+                    message: "This email may already be registered. Please check and try again.",
+                },
+                409,
             );
         }
 
-        console.error("Signup error:", error);
+        log("error", "signup_failed", {
+            error: error instanceof Error ? error.message : "Unknown error",
+        });
 
-        return NextResponse.json(
-            { message: "We could not create your account right now. Please try again later." },
-            { status: 500 },
+        return respond(
+            {
+                message: "We could not create your account right now. Please try again later.",
+            },
+            500,
         );
     }
 }

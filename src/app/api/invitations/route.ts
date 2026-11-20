@@ -1,3 +1,4 @@
+
 import { createHash, randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -5,6 +6,7 @@ import { z } from "zod";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { sendInvitationEmail } from "@/lib/email";
+import { createRequestLogger } from "@/lib/request-logger";
 
 const invitationSchema = z.object({
     email: z.string()
@@ -16,58 +18,85 @@ const invitationSchema = z.object({
 });
 
 export const POST = async (request: Request) => {
-    const session = await auth();
-    const userId = session?.user?.id;
-    const activeTenantId = session?.user?.activeTenantId;
+    const { requestId, log } = createRequestLogger(request);
 
-    if (!userId) {
-        return NextResponse.json(
-            { message: "Please log in first." },
-            { status: 401 },
-        );
-    }
-
-    if (!activeTenantId) {
-        return NextResponse.json(
-            { message: "Select an active organization first." },
-            { status: 409 },
-        );
-    }
-
-    let body: unknown;
-
-    try {
-        body = await request.json();
-    } catch {
-        return NextResponse.json(
-            { message: "Invalid request body." },
-            { status: 400 },
-        );
-    }
-
-    const parsed = invitationSchema.safeParse(body);
-
-    if (!parsed.success) {
-        return NextResponse.json(
-            {
-                message:
-                    parsed.error.issues[0]?.message ??
-                    "Invalid invitation details.",
+    const respond = (body: unknown, status = 200) =>
+        NextResponse.json(body, {
+            status,
+            headers: {
+                "Cache-Control": "no-store",
+                "X-Request-Id": requestId,
             },
-            { status: 400 },
-        );
-    }
+        });
 
-    const { email, role } = parsed.data;
-
-    if (email === session.user?.email?.toLowerCase()) {
-        return NextResponse.json(
-            { message: "You cannot invite yourself." },
-            { status: 400 },
-        );
-    }
+    log("info", "invitation_creation_requested");
 
     try {
+        const session = await auth();
+        const userId = session?.user?.id;
+        const activeTenantId = session?.user?.activeTenantId;
+
+        if (!userId) {
+            log("warn", "invitation_creation_unauthorized");
+            return respond({ message: "Please log in first." }, 401);
+        }
+
+        if (!activeTenantId) {
+            log("warn", "invitation_creation_missing_active_tenant", {
+                userId,
+            });
+
+            return respond(
+                { message: "Select an active organization first." },
+                409,
+            );
+        }
+
+        let body: unknown;
+
+        try {
+            body = await request.json();
+        } catch {
+            log("warn", "invitation_creation_invalid_json", {
+                userId,
+                tenantId: activeTenantId,
+            });
+
+            return respond({ message: "Invalid request body." }, 400);
+        }
+
+        const parsed = invitationSchema.safeParse(body);
+
+        if (!parsed.success) {
+            log("warn", "invitation_creation_validation_failed", {
+                userId,
+                tenantId: activeTenantId,
+            });
+
+            return respond(
+                {
+                    message:
+                        parsed.error.issues[0]?.message ??
+                        "Invalid invitation details.",
+                },
+                400,
+            );
+        }
+
+        const { email, role } = parsed.data;
+
+        if (email === session.user?.email?.toLowerCase()) {
+            log("warn", "invitation_self_invite_rejected", {
+                userId,
+                tenantId: activeTenantId,
+            });
+
+            return respond(
+                { message: "You cannot invite yourself." },
+                400,
+            );
+        }
+
         const rawToken = randomBytes(32).toString("hex");
 
         const tokenHash = createHash("sha256")
@@ -178,9 +207,15 @@ export const POST = async (request: Request) => {
         );
 
         if (result.status !== 201) {
-            return NextResponse.json(
+            log("warn", "invitation_creation_not_completed", {
+                userId,
+                tenantId: activeTenantId,
+                status: result.status,
+            });
+
+            return respond(
                 { message: result.message },
-                { status: result.status },
+                result.status,
             );
         }
 
@@ -189,7 +224,6 @@ export const POST = async (request: Request) => {
         const invitationUrl =
             `${origin}/invitations/accept?token=${rawToken}`;
 
-        // Local development: skip email and return the invitation link.
         if (process.env.NODE_ENV !== "development") {
             try {
                 await sendInvitationEmail({
@@ -199,10 +233,12 @@ export const POST = async (request: Request) => {
                     role,
                 });
             } catch (error) {
-                console.error(
-                    "Invitation email delivery failed:",
-                    error,
-                );
+                log("error", "invitation_email_delivery_failed", {
+                    tenantId: activeTenantId,
+                    error: error instanceof Error
+                        ? error.message
+                        : String(error),
+                });
 
                 await prisma.$withTenant(
                     userId,
@@ -217,14 +253,22 @@ export const POST = async (request: Request) => {
                     },
                 );
 
-                return NextResponse.json(
+                return respond(
                     { message: "Could not send invitation email." },
-                    { status: 502 },
+                    502,
                 );
             }
         }
 
-        return NextResponse.json(
+        log("info", "invitation_created", {
+            userId,
+            tenantId: activeTenantId,
+            role,
+            email,
+            emailSkipped: process.env.NODE_ENV === "development",
+        });
+
+        return respond(
             {
                 message:
                     process.env.NODE_ENV === "development"
@@ -233,17 +277,18 @@ export const POST = async (request: Request) => {
                 invitationUrl,
                 expiresInDays: 7,
             },
-            {
-                status: 201,
-                headers: { "Cache-Control": "no-store" },
-            },
+            201,
         );
     } catch (error) {
-        console.error("Invitation creation error:", error);
+        log("error", "invitation_creation_failed", {
+            error: error instanceof Error
+                ? error.message
+                : String(error),
+        });
 
-        return NextResponse.json(
+        return respond(
             { message: "Could not create the invitation." },
-            { status: 500 },
+            500,
         );
     }
 };

@@ -1,6 +1,7 @@
 
 import "dotenv/config";
 import { PrismaClient } from "../src/generated/prisma/client";
+import { randomUUID } from "node:crypto";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -24,12 +25,12 @@ const BATCH_SIZE = 5000;
 const EVENTS_PER_JOURNEY = 6;
 
 const SEED_SOURCE = "atlas-seed-v2";
+const SEED_RUN_ID = randomUUID()
 
 const KEEP_OLD_SEED = process.env.SEED_KEEP_OLD === "true";
 
 const journeyTemplates: string[][] = [
     [
-        "Sign Up",
         "Page Viewed",
         "Product Viewed",
         "Add to Cart",
@@ -40,7 +41,6 @@ const journeyTemplates: string[][] = [
         "Page Viewed",
         "Product Viewed",
         "Add to Cart",
-        "Cart Viewed",
         "Checkout Started",
         "Checkout Abandoned",
     ],
@@ -50,7 +50,6 @@ const journeyTemplates: string[][] = [
         "Product Viewed",
         "Search Performed",
         "Product Viewed",
-        "Page Viewed",
     ],
     [
         "Page Viewed",
@@ -58,7 +57,6 @@ const journeyTemplates: string[][] = [
         "Product Viewed",
         "Add to Cart",
         "Cart Viewed",
-        "Page Viewed",
     ],
 ];
 
@@ -95,14 +93,6 @@ const seedEvents = async () => {
 
         console.log(`Found ${tenants.length} tenants.`);
         console.log(`Target events: ${TOTAL_EVENTS.toLocaleString()}`);
-
-        // Remove only incomplete or previous v2 seed data.
-        const deletedV2 = await db.$executeRaw`
-            DELETE FROM "Event"
-            WHERE "properties" @> '{"seedSource":"atlas-seed-v2"}'::jsonb
-        `;
-
-        console.log(`Removed previous v2 seed events: ${deletedV2}`);
 
         const endDate = new Date();
 
@@ -152,7 +142,9 @@ const seedEvents = async () => {
                             journeyIndex % journeyTemplates.length;
 
                         const eventName =
-                            journeyTemplates[journeyType]![step]!;
+                            step === 0
+                                ? "Sign Up"
+                                : journeyTemplates[journeyType]![step - 1]!;
 
                         const distinctId =
                             `seed-user-${tenantIndex}-${journeyIndex}`;
@@ -198,6 +190,7 @@ const seedEvents = async () => {
                             string | number | boolean
                         > = {
                             seedSource: SEED_SOURCE,
+                            seedRunId: SEED_RUN_ID,
                             seedUser: distinctId,
                             source: "seed-script",
                             sessionId,
@@ -310,20 +303,24 @@ const seedEvents = async () => {
             `Successfully inserted ${totalInserted.toLocaleString()} realistic events.`,
         );
 
-        // Keep the old dataset until the complete new dataset exists.
+        // Delete previous seed datasets only after the new run succeeds.
         if (!KEEP_OLD_SEED) {
-            const deletedLegacy = await db.$executeRaw`
-                DELETE FROM "Event"
-                WHERE "properties" @> '{"seedSource":"atlas-seed-v1"}'::jsonb
-            `;
+            const deletedV2 = await db.$executeRaw`
+        DELETE FROM "Event"
+        WHERE "properties"->>'seedSource' = ${SEED_SOURCE}
+          AND "properties"->>'seedRunId' IS DISTINCT FROM ${SEED_RUN_ID}
+    `;
 
-            console.log(
-                `Removed previous v1 seed events: ${deletedLegacy}`,
-            );
+            console.log(`Removed previous v2 seed events: ${deletedV2}`);
+
+            const deletedV1 = await db.$executeRaw`
+        DELETE FROM "Event"
+        WHERE "properties"->>'seedSource' = 'atlas-seed-v1'
+    `;
+
+            console.log(`Removed previous v1 seed events: ${deletedV1}`);
         } else {
-            console.log(
-                "Keeping previous seed data because SEED_KEEP_OLD=true.",
-            );
+            console.log("Keeping previous seed data because SEED_KEEP_OLD=true.");
         }
 
         console.log("Realistic event seeding completed successfully.");

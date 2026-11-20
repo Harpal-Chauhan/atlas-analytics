@@ -322,6 +322,24 @@ export const POST = async (request: Request) => {
                     })),
                 });
 
+                // Publish a tenant-scoped notification after event insertion.
+                // PostgreSQL delivers this notification only after transaction commit.
+                const eventNames = [
+                    ...new Set(events.map((event) => event.eventName)),
+                ].slice(0, 20);
+
+                await tx.$queryRaw`
+    SELECT pg_notify(
+        'atlas_events',
+        ${JSON.stringify({
+                    tenantId: currentKey.tenantId,
+                    eventCount: events.length,
+                    latestEventAt: now.toISOString(),
+                    eventNames,
+                })}
+    )::text AS "notificationResult"
+`;
+
                 return {
                     status: 202,
                     body: {
