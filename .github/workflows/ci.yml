@@ -39,6 +39,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/atlas_ci?schema=public
       APP_DATABASE_URL: postgresql://atlas_app:atlas_app_ci_password@localhost:5432/atlas_ci?schema=public
+      OPS_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/atlas_ci?schema=public
       AUTH_SECRET: atlas-ci-test-secret-not-for-production
       AUTH_URL: http://localhost:3000
 
