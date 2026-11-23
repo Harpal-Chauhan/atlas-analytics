@@ -1,5 +1,6 @@
-
 import "dotenv/config";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,20 +16,19 @@ if (!databaseUrl || !appDatabaseUrl) {
 
 // Admin connection is only used to discover tenant IDs.
 const adminDb = new PrismaClient({
-    datasources: {
-        db: {
-            url: databaseUrl,
-        },
-    },
+    adapter: new PrismaPg(
+        new Pool({
+            connectionString: databaseUrl,
+        }),
+    ),
 });
 
-// App connection performs all tenant-scoped aggregation.
 const appDb = new PrismaClient({
-    datasources: {
-        db: {
-            url: appDatabaseUrl,
-        },
-    },
+    adapter: new PrismaPg(
+        new Pool({
+            connectionString: appDatabaseUrl,
+        }),
+    ),
 });
 
 export const processTenantRollups = async (tenantId: string) => {
@@ -152,25 +152,42 @@ export const processTenantRollups = async (tenantId: string) => {
     });
 };
 
+
+export const processAllTenantRollups = async () => {
+    const tenants = await adminDb.tenant.findMany({
+        select: {
+            id: true,
+        },
+    });
+
+    console.log(`Found ${tenants.length} tenants.`);
+
+    const results = [];
+
+    for (const tenant of tenants) {
+        console.log(`Processing tenant: ${tenant.id}`);
+
+        const result = await processTenantRollups(tenant.id);
+
+        console.log("Rollups completed:", result);
+
+        results.push({
+            tenantId: tenant.id,
+            ...result,
+        });
+    }
+
+    console.log("All tenant rollups completed successfully.");
+
+    return {
+        tenantCount: tenants.length,
+        results,
+    };
+};
+
 const main = async () => {
     try {
-        const tenants = await adminDb.tenant.findMany({
-            select: {
-                id: true,
-            },
-        });
-
-        console.log(`Found ${tenants.length} tenants.`);
-
-        for (const tenant of tenants) {
-            console.log(`Processing tenant: ${tenant.id}`);
-
-            const result = await processTenantRollups(tenant.id);
-
-            console.log("Rollups completed:", result);
-        }
-
-        console.log("All tenant rollups completed successfully.");
+        await processAllTenantRollups();
     } finally {
         await appDb.$disconnect();
         await adminDb.$disconnect();
