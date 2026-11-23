@@ -85,10 +85,10 @@ const connectListener = async (): Promise<void> => {
         return state.connecting;
     }
 
-    const connectionString = process.env.APP_DATABASE_URL;
+    const connectionString = process.env.APP_LISTENER_DATABASE_URL;
 
     if (!connectionString) {
-        throw new Error("APP_DATABASE_URL is not configured.");
+        throw new Error("APP_LISTENER_DATABASE_URL is not configured.");
     }
 
     const client = new Client({
