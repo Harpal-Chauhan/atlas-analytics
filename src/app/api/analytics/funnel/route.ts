@@ -124,7 +124,7 @@ export const GET = async (request: Request) => {
 
         const requestedSteps = Prisma.join(
             steps.map((eventName, index) =>
-                Prisma.sql`(${index + 1}, ${eventName})`,
+                Prisma.sql`(${index + 1}::int, ${eventName}::text)`,
             ),
         );
 
