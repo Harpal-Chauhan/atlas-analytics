@@ -176,7 +176,7 @@ async function* generateCsvRows(
         const data = await withTenant(userId, tenantId, async (tx) => {
             const requestedStepValues = Prisma.join(
                 requestedSteps.map((eventName, index) =>
-                    Prisma.sql`(${index + 1}, ${eventName})`
+                    Prisma.sql`(${index + 1}::int, ${eventName}::text)`
                 )
             );
 
