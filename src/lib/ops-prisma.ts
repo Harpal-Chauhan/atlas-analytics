@@ -1,4 +1,6 @@
 
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
 import { PrismaClient } from "@/generated/prisma/client";
 
 const createOpsPrismaClient = () => {
@@ -8,12 +10,14 @@ const createOpsPrismaClient = () => {
         throw new Error("OPS_DATABASE_URL is not configured.");
     }
 
+    const pool = new Pool({
+        connectionString: opsDatabaseUrl,
+    });
+
+    const adapter = new PrismaPg(pool);
+
     return new PrismaClient({
-        datasources: {
-            db: {
-                url: opsDatabaseUrl,
-            },
-        },
+        adapter,
     });
 };
 

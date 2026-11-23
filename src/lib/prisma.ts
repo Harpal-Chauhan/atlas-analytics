@@ -1,4 +1,6 @@
 
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
 import { PrismaClient, type Prisma } from "@/generated/prisma/client";
 
 const createPrismaClient = () => {
@@ -8,12 +10,14 @@ const createPrismaClient = () => {
         throw new Error("APP_DATABASE_URL is not configured.");
     }
 
+    const pool = new Pool({
+        connectionString: appDatabaseUrl,
+    });
+
+    const adapter = new PrismaPg(pool);
+
     const baseClient = new PrismaClient({
-        datasources: {
-            db: {
-                url: appDatabaseUrl,
-            },
-        },
+        adapter,
     });
 
     return baseClient.$extends({
@@ -26,12 +30,12 @@ const createPrismaClient = () => {
                 return baseClient.$transaction(
                     async (tx) => {
                         await tx.$queryRaw`
-            SELECT set_config('app.user_id', ${userId}, true)
-          `;
+                            SELECT set_config('app.user_id', ${userId}, true)
+                        `;
 
                         await tx.$queryRaw`
-            SELECT set_config('app.tenant_id', ${tenantId}, true)
-          `;
+                            SELECT set_config('app.tenant_id', ${tenantId}, true)
+                        `;
 
                         const membership = await tx.membership.findUnique({
                             where: {
@@ -66,10 +70,11 @@ const createPrismaClient = () => {
 
                         return callback(tx);
                     },
-                {
-                    maxWait: 10000,
-                    timeout: 60000
-                });
+                    {
+                        maxWait: 10000,
+                        timeout: 60000,
+                    },
+                );
             },
         },
     });
