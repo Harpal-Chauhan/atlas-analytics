@@ -36,33 +36,54 @@ export const consumeMonthlyQuota = async (
 
     const quota = tenant.monthlyEventQuota;
 
+    // Reject a batch that is larger than the entire quota.
+    if (eventCount > quota) {
+        const usage = await tx.tenantMonthlyUsage.findUnique({
+            where: {
+                tenantId_monthStart: {
+                    tenantId,
+                    monthStart,
+                },
+            },
+            select: { eventCount: true },
+        });
+
+        const used = usage?.eventCount ?? 0;
+
+        return {
+            allowed: false,
+            used,
+            limit: quota,
+            remaining: Math.max(0, quota - used),
+            monthStart,
+        };
+    }
 
     const updatedRows = await tx.$queryRaw<
         { eventCount: number }[]
     >`
-    INSERT INTO "TenantMonthlyUsage" (
-      "tenantId",
-      "monthStart",
-      "eventCount",
-      "updatedAt"
-    )
-    SELECT
-      ${tenantId},
-      ${monthStartDate}::date,
-      ${eventCount},
-      NOW()
-    WHERE ${eventCount} <= ${quota}
-    ON CONFLICT ("tenantId", "monthStart")
-    DO UPDATE SET
-      "eventCount" =
-        "TenantMonthlyUsage"."eventCount" + EXCLUDED."eventCount",
-      "updatedAt" = NOW()
-    WHERE
-      "TenantMonthlyUsage"."eventCount" + EXCLUDED."eventCount"
-      <= ${quota}
-    RETURNING "eventCount"
-  `;
-
+        INSERT INTO "TenantMonthlyUsage" (
+            "tenantId",
+            "monthStart",
+            "eventCount",
+            "updatedAt"
+        )
+        VALUES (
+            ${tenantId}::text,
+            ${monthStartDate}::date,
+            ${eventCount}::int,
+            NOW()
+        )
+        ON CONFLICT ("tenantId", "monthStart")
+        DO UPDATE SET
+            "eventCount" =
+                "TenantMonthlyUsage"."eventCount" + EXCLUDED."eventCount",
+            "updatedAt" = NOW()
+        WHERE
+            "TenantMonthlyUsage"."eventCount" + EXCLUDED."eventCount"
+            <= ${quota}::int
+        RETURNING "eventCount"
+    `;
 
     const updatedRow = updatedRows[0];
 

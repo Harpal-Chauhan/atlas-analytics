@@ -99,6 +99,10 @@ const connectListener = async (): Promise<void> => {
     state.client = client;
 
     client.on("notification", (message) => {
+        console.log("[LIVE] PostgreSQL notification received:", {
+            channel: message.channel,
+            hasPayload: Boolean(message.payload),
+        });
         if (
             message.channel !== "atlas_events" ||
             !message.payload
@@ -121,7 +125,8 @@ const connectListener = async (): Promise<void> => {
         }
     });
 
-    client.on("error", () => {
+    client.on("error", (error) => {
+        console.error("[LIVE] PostgreSQL listener error:", error.message);
         if (state.client !== client) return;
 
         state.client = null;
@@ -143,6 +148,8 @@ const connectListener = async (): Promise<void> => {
         try {
             await client.connect();
             await client.query("LISTEN atlas_events");
+
+            console.log("[LIVE] Listening on atlas_events");
 
             state.connected = true;
         } catch (error) {

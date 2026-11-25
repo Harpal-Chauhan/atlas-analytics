@@ -22,10 +22,20 @@ const RetentionHeatmap = async ({
 
   if (!userId || !tenantId) {
     return (
-      <section className="rounded-xl border border-gray-200 bg-white p-6">
-        <p className="text-sm text-gray-500">
-          Please sign in and select an organization to view retention data.
-        </p>
+      <section className="rounded-2xl border border-[#DCE8DD] bg-white p-5 shadow-sm sm:p-6">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#FFF9E9] text-[#8A6425]">
+            !
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-[#142B27]">
+              Organization unavailable
+            </h3>
+            <p className="mt-1 text-xs leading-5 text-[#718078] sm:text-sm">
+              Please sign in and select an organization to view retention data.
+            </p>
+          </div>
+        </div>
       </section>
     );
   }
@@ -41,8 +51,20 @@ const RetentionHeatmap = async ({
     startDate > endDate
   ) {
     return (
-      <section className="rounded-xl border border-gray-200 bg-white p-6">
-        <p className="text-sm text-red-600">Invalid date range.</p>
+      <section className="rounded-2xl border border-[#F3C8BC] bg-white p-5 shadow-sm sm:p-6">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#FFF1EC] text-[#B85D46]">
+            !
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-[#142B27]">
+              Invalid date range
+            </h3>
+            <p className="mt-1 text-xs leading-5 text-[#B85D46]">
+              Please select a valid start date and end date.
+            </p>
+          </div>
+        </div>
       </section>
     );
   }
@@ -87,40 +109,40 @@ const RetentionHeatmap = async ({
             GROUP BY "cohortWeek"
           ),
 
-activity_weeks AS (
-  SELECT DISTINCT
-    cu."cohortWeek",
-    activity."distinctId",
-    date_trunc(
-      'week',
-      activity."bucketStart" AT TIME ZONE 'UTC'
-    ) AS "activityWeek"
-  FROM "TenantUserActivityDaily" activity
-  JOIN cohort_users cu
-    ON cu."distinctId" = activity."distinctId"
-  WHERE
-    activity."tenantId" = ${tenantId}
-    AND activity."bucketStart" >=
-      date_trunc('day', cu."signupAt" AT TIME ZONE 'UTC')
-      AT TIME ZONE 'UTC'
-    AND activity."bucketStart" < ${endExclusive}
-),
+          activity_weeks AS (
+            SELECT DISTINCT
+              cu."cohortWeek",
+              activity."distinctId",
+              date_trunc(
+                'week',
+                activity."bucketStart" AT TIME ZONE 'UTC'
+              ) AS "activityWeek"
+            FROM "TenantUserActivityDaily" activity
+            JOIN cohort_users cu
+              ON cu."distinctId" = activity."distinctId"
+            WHERE
+              activity."tenantId" = ${tenantId}
+              AND activity."bucketStart" >=
+                date_trunc('day', cu."signupAt" AT TIME ZONE 'UTC')
+                AT TIME ZONE 'UTC'
+              AND activity."bucketStart" < ${endExclusive}
+          ),
 
-weekly_activity AS (
-  SELECT
-    aw."cohortWeek",
-    (
-      (aw."activityWeek"::date - aw."cohortWeek"::date) / 7
-    )::int AS "weekNumber",
-    COUNT(*)::bigint AS "activeUsers"
-  FROM activity_weeks aw
-  WHERE
-    aw."activityWeek" >= aw."cohortWeek"
-    AND aw."activityWeek" < aw."cohortWeek" + INTERVAL '84 days'
-  GROUP BY
-    aw."cohortWeek",
-    2
-)
+          weekly_activity AS (
+            SELECT
+              aw."cohortWeek",
+              (
+                (aw."activityWeek"::date - aw."cohortWeek"::date) / 7
+              )::int AS "weekNumber",
+              COUNT(*)::bigint AS "activeUsers"
+            FROM activity_weeks aw
+            WHERE
+              aw."activityWeek" >= aw."cohortWeek"
+              AND aw."activityWeek" < aw."cohortWeek" + INTERVAL '84 days'
+            GROUP BY
+              aw."cohortWeek",
+              2
+          )
 
           SELECT
             to_char(wa."cohortWeek", 'YYYY-MM-DD') AS "cohortWeek",
@@ -142,10 +164,21 @@ weekly_activity AS (
     console.error("Retention analytics error:", error);
 
     return (
-      <section className="rounded-xl border border-gray-200 bg-white p-6">
-        <p className="text-sm text-red-600">
-          Could not load retention analytics.
-        </p>
+      <section className="rounded-2xl border border-[#F3C8BC] bg-white p-5 shadow-sm sm:p-6">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#FFF1EC] text-[#B85D46]">
+            !
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-[#142B27]">
+              Unable to load retention analytics
+            </h3>
+            <p className="mt-1 text-xs leading-5 text-[#B85D46] sm:text-sm">
+              Something went wrong while loading retention data. Please try
+              again later.
+            </p>
+          </div>
+        </div>
       </section>
     );
   }
@@ -163,116 +196,232 @@ weekly_activity AS (
     });
   };
 
+  const getRetentionStyle = (rate: number) => {
+    if (rate >= 75) {
+      return "bg-[#D6F36A] text-[#142B27]";
+    }
+
+    if (rate >= 50) {
+      return "bg-[#B9DDC8] text-[#176C52]";
+    }
+
+    if (rate >= 25) {
+      return "bg-[#EAF3E9] text-[#176C52]";
+    }
+
+    return "bg-[#F0F3ED] text-[#718078]";
+  };
+
   return (
-    <section className="rounded-xl border border-gray-200 bg-white p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="font-semibold">Weekly Retention</h3>
-          <p className="mt-1 text-sm text-gray-500">
-            Percentage of users returning in each week after their first active
-            week.
-          </p>
+    <section className="min-w-0 overflow-hidden rounded-2xl border border-[#DCE8DD] bg-white shadow-sm">
+      {/* Header */}
+      <div className="flex flex-col gap-4 border-b border-[#DCE8DD] bg-[#F8FAF4] px-4 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#EAF3E9] text-[#176C52]">
+            <svg
+              className="h-5 w-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M3 3v18h18" />
+              <path d="m19 9-5 5-4-4-4 4" />
+            </svg>
+          </div>
+
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-base font-bold text-[#142B27] sm:text-lg">
+                Weekly Retention
+              </h3>
+
+              <span className="rounded-full bg-[#EAF3E9] px-2.5 py-1 text-[10px] font-bold tracking-wide text-[#176C52]">
+                COHORT ANALYTICS
+              </span>
+            </div>
+
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-[#718078] sm:text-sm">
+              Percentage of users returning in each week after their first
+              active week.
+            </p>
+          </div>
         </div>
 
-        <CsvExportButton
-          view="retention"
-          startDate={startDate}
-          endDate={endDate}
-        />
+        <div className="w-full shrink-0 sm:w-auto">
+          <CsvExportButton
+            view="retention"
+            startDate={startDate}
+            endDate={endDate}
+          />
+        </div>
       </div>
 
-      {cohorts.length === 0 ? (
-        <p className="mt-6 text-sm text-gray-500">
-          No retention cohort data available for this date range.
-        </p>
-      ) : (
-        <div className="mt-5 overflow-x-auto">
-          <table className="w-full min-w-[850px] border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-gray-200 text-left">
-                <th className="px-3 py-3 font-medium">Cohort Week</th>
-                <th className="px-3 py-3 text-right font-medium">Users</th>
+      <div className="p-4 sm:p-6">
+        {/* Legend */}
+        <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2">
+          <span className="text-xs font-semibold text-[#718078]">
+            Retention Rate:
+          </span>
 
-                {Array.from({ length: 12 }, (_, index) => (
-                  <th key={index} className="px-3 py-3 text-center font-medium">
-                    Week {index}
-                  </th>
-                ))}
-              </tr>
-            </thead>
+          <div className="flex items-center gap-1.5">
+            <span className="h-3 w-3 rounded-sm bg-[#D6F36A]" />
+            <span className="text-[11px] text-[#718078]">75%+</span>
+          </div>
 
-            <tbody>
-              {cohorts.map((cohort) => (
-                <tr
-                  key={cohort.cohortWeek}
-                  className="border-b border-gray-100 last:border-0"
-                >
-                  <td className="whitespace-nowrap px-3 py-3">
-                    {formatDate(cohort.cohortWeek)}
-                  </td>
+          <div className="flex items-center gap-1.5">
+            <span className="h-3 w-3 rounded-sm bg-[#B9DDC8]" />
+            <span className="text-[11px] text-[#718078]">50–74%</span>
+          </div>
 
-                  <td className="px-3 py-3 text-right font-medium">
-                    {cohort.cohortSize.toLocaleString("en-IN")}
-                  </td>
+          <div className="flex items-center gap-1.5">
+            <span className="h-3 w-3 rounded-sm bg-[#EAF3E9]" />
+            <span className="text-[11px] text-[#718078]">25–49%</span>
+          </div>
 
-                  {Array.from({ length: 12 }, (_, index) => {
-                    const week = getRetention(cohort, index);
-
-                    const weekStart = new Date(
-                      `${cohort.cohortWeek}T00:00:00.000Z`,
-                    );
-
-                    weekStart.setUTCDate(weekStart.getUTCDate() + index * 7);
-
-                    const weekEndExclusive = new Date(weekStart);
-                    weekEndExclusive.setUTCDate(
-                      weekEndExclusive.getUTCDate() + 7,
-                    );
-
-                    const selectedEndExclusive = new Date(
-                      `${endDate}T00:00:00.000Z`,
-                    );
-                    selectedEndExclusive.setUTCDate(
-                      selectedEndExclusive.getUTCDate() + 1,
-                    );
-
-                    const isAvailable =
-                      weekEndExclusive <= selectedEndExclusive;
-
-                    const rate = week?.retentionRate ?? 0;
-
-                    return (
-                      <td key={index} className="px-2 py-3 text-center">
-                        {isAvailable ? (
-                          <span
-                            title={`${week?.activeUsers ?? 0} active users`}
-                            className="inline-flex min-w-12 justify-center rounded-md px-2 py-2 font-medium"
-                            style={{
-                              backgroundColor:
-                                rate >= 75
-                                  ? "#d1fae5"
-                                  : rate >= 50
-                                    ? "#a7f3d0"
-                                    : rate >= 25
-                                      ? "#dbeafe"
-                                      : "#f3f4f6",
-                              color: "#1f2937",
-                            }}
-                          >
-                            {rate.toFixed(1)}%
-                          </span>
-                        ) : (
-                          <span className="text-gray-300">—</span>
-                        )}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="flex items-center gap-1.5">
+            <span className="h-3 w-3 rounded-sm bg-[#F0F3ED]" />
+            <span className="text-[11px] text-[#718078]">Below 25%</span>
+          </div>
         </div>
-      )}
+
+        {cohorts.length === 0 ? (
+          <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#DCE8DD] bg-[#F8FAF4] px-4 py-10 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#EAF3E9] text-[#176C52]">
+              <svg
+                className="h-6 w-6"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M3 3v18h18" />
+                <path d="M7 14h.01M12 10h.01M17 6h.01" />
+              </svg>
+            </div>
+
+            <h4 className="mt-3 text-sm font-bold text-[#142B27]">
+              No retention data available
+            </h4>
+
+            <p className="mt-1 max-w-sm text-xs leading-5 text-[#829087] sm:text-sm">
+              No retention cohort data is available for the selected date range.
+              Try selecting a different date range.
+            </p>
+          </div>
+        ) : (
+          <>
+            {/* Table */}
+            <div className="overflow-x-auto rounded-xl border border-[#DCE8DD]">
+              <table className="w-full min-w-[900px] border-collapse text-sm">
+                <thead>
+                  <tr className="bg-[#F8FAF4] text-left">
+                    <th className="sticky left-0 z-10 min-w-[145px] border-b border-[#DCE8DD] bg-[#F8FAF4] px-3 py-4 text-xs font-bold text-[#142B27] sm:px-4">
+                      Cohort Week
+                    </th>
+
+                    <th className="min-w-[85px] border-b border-[#DCE8DD] px-3 py-4 text-right text-xs font-bold text-[#142B27]">
+                      Users
+                    </th>
+
+                    {Array.from({ length: 12 }, (_, index) => (
+                      <th
+                        key={index}
+                        className="min-w-[68px] border-b border-[#DCE8DD] px-2 py-4 text-center text-xs font-bold text-[#142B27]"
+                      >
+                        Week {index}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {cohorts.map((cohort, cohortIndex) => (
+                    <tr
+                      key={cohort.cohortWeek}
+                      className="transition hover:bg-[#F8FAF4]"
+                    >
+                      <td className="sticky left-0 z-10 whitespace-nowrap border-b border-[#DCE8DD] bg-white px-3 py-3 text-xs font-semibold text-[#142B27] sm:px-4">
+                        {formatDate(cohort.cohortWeek)}
+                      </td>
+
+                      <td className="border-b border-[#DCE8DD] px-3 py-3 text-right text-xs font-bold tabular-nums text-[#176C52]">
+                        {cohort.cohortSize.toLocaleString("en-IN")}
+                      </td>
+
+                      {Array.from({ length: 12 }, (_, index) => {
+                        const week = getRetention(cohort, index);
+
+                        const weekStart = new Date(
+                          `${cohort.cohortWeek}T00:00:00.000Z`,
+                        );
+
+                        weekStart.setUTCDate(
+                          weekStart.getUTCDate() + index * 7,
+                        );
+
+                        const weekEndExclusive = new Date(weekStart);
+
+                        weekEndExclusive.setUTCDate(
+                          weekEndExclusive.getUTCDate() + 7,
+                        );
+
+                        const selectedEndExclusive = new Date(
+                          `${endDate}T00:00:00.000Z`,
+                        );
+
+                        selectedEndExclusive.setUTCDate(
+                          selectedEndExclusive.getUTCDate() + 1,
+                        );
+
+                        const isAvailable =
+                          weekEndExclusive <= selectedEndExclusive;
+
+                        const rate = week?.retentionRate ?? 0;
+
+                        return (
+                          <td
+                            key={index}
+                            className="border-b border-[#DCE8DD] px-2 py-3 text-center"
+                          >
+                            {isAvailable ? (
+                              <span
+                                title={`${week?.activeUsers ?? 0} active users`}
+                                className={`inline-flex min-w-[52px] justify-center rounded-lg px-2 py-2 text-xs font-bold tabular-nums transition hover:scale-105 ${getRetentionStyle(rate)}`}
+                              >
+                                {rate.toFixed(1)}%
+                              </span>
+                            ) : (
+                              <span className="text-xs font-medium text-[#C5CEC5]">
+                                —
+                              </span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Footer */}
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-[#829087]">
+                Showing {cohorts.length} retention cohorts.
+              </p>
+
+              <p className="text-xs text-[#829087]">
+                Scroll horizontally to view all 12 weeks.
+              </p>
+            </div>
+          </>
+        )}
+      </div>
     </section>
   );
 };

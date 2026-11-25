@@ -1,8 +1,8 @@
-
+﻿
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import { PrismaClient } from "../src/generated/prisma/client";
+import { createTestPrismaClient } from "./test-prisma";
 import {
     createApiKey,
     createApiKeyLookupHash,
@@ -19,21 +19,9 @@ if (!databaseUrl || !appDatabaseUrl) {
     );
 }
 
-const adminDb = new PrismaClient({
-    datasources: {
-        db: {
-            url: databaseUrl,
-        },
-    },
-});
+const adminDb = createTestPrismaClient(databaseUrl);
 
-const appDb = new PrismaClient({
-    datasources: {
-        db: {
-            url: appDatabaseUrl,
-        },
-    },
-});
+const appDb = createTestPrismaClient(appDatabaseUrl);
 
 const createTestContext = async () => {
     const suffix = randomUUID();
@@ -83,17 +71,23 @@ const consumeToken = async (
     tenantId: string,
     apiKeyId: string,
 ) => {
-    return appDb.$transaction(async (tx) => {
-        await tx.$queryRaw`
-            SELECT set_config(
-                'app.tenant_id',
-                ${tenantId},
-                true
-            )
-        `;
+    return appDb.$transaction(
+        async (tx) => {
+            await tx.$queryRaw`
+                SELECT set_config(
+                    'app.tenant_id',
+                    ${tenantId},
+                    true
+                )
+            `;
 
-        return consumeApiKeyToken(tx, apiKeyId);
-    });
+            return consumeApiKeyToken(tx, apiKeyId);
+        },
+        {
+            maxWait: 15000,
+            timeout: 15000,
+        },
+    );
 };
 
 afterAll(async () => {

@@ -191,6 +191,9 @@ export const GET = async () => {
             }
 
             return result;
+        }, {
+            maxWait: 10000,
+            timeout: 60000,
         });
 
         return NextResponse.json(

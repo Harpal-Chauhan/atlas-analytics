@@ -1,9 +1,9 @@
-
+﻿
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
-import { PrismaClient } from "../src/generated/prisma/client";
+import { createTestPrismaClient } from "./test-prisma";
 import {
     createApiKey,
     createApiKeyLookupHash,
@@ -21,13 +21,9 @@ if (!databaseUrl || !appDatabaseUrl) {
     );
 }
 
-const adminDb = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-});
+const adminDb = createTestPrismaClient(databaseUrl);
 
-const appDb = new PrismaClient({
-    datasources: { db: { url: appDatabaseUrl } },
-});
+const appDb = createTestPrismaClient(appDatabaseUrl);
 
 const createTestContext = async () => {
     const suffix = randomUUID();

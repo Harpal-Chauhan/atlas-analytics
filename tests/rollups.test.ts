@@ -1,8 +1,8 @@
-
+﻿
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import { PrismaClient } from "../src/generated/prisma/client";
+import { createTestPrismaClient } from "./test-prisma";
 import {
     processTenantRollups,
     disconnectRollupClients,
@@ -14,13 +14,7 @@ if (!databaseUrl) {
     throw new Error("DATABASE_URL must be configured in .env");
 }
 
-const adminDb = new PrismaClient({
-    datasources: {
-        db: {
-            url: databaseUrl,
-        },
-    },
-});
+const adminDb = createTestPrismaClient(databaseUrl);
 
 const createTestTenant = async () => {
     const suffix = randomUUID();

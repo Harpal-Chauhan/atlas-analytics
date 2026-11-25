@@ -1,20 +1,33 @@
 
 import "dotenv/config";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { randomUUID } from "node:crypto";
 
 const databaseUrl = process.env.DATABASE_URL;
+const appDatabaseUrl = process.env.APP_DATABASE_URL;
 
-if (!databaseUrl) {
-    throw new Error("DATABASE_URL must be configured.");
+if (!databaseUrl || !appDatabaseUrl) {
+    throw new Error(
+        "DATABASE_URL and APP_DATABASE_URL must be configured.",
+    );
 }
 
-const db = new PrismaClient({
-    datasources: {
-        db: {
-            url: databaseUrl,
-        },
-    },
+const adminPool = new Pool({
+    connectionString: databaseUrl,
+});
+
+const appPool = new Pool({
+    connectionString: appDatabaseUrl,
+});
+
+const adminDb = new PrismaClient({
+    adapter: new PrismaPg(adminPool),
+});
+
+const appDb = new PrismaClient({
+    adapter: new PrismaPg(appPool),
 });
 
 const TOTAL_EVENTS = Number(
@@ -25,9 +38,9 @@ const BATCH_SIZE = 5000;
 const EVENTS_PER_JOURNEY = 6;
 
 const SEED_SOURCE = "atlas-seed-v2";
-const SEED_RUN_ID = randomUUID()
+const SEED_RUN_ID = randomUUID();
 
-const KEEP_OLD_SEED = process.env.SEED_KEEP_OLD === "true";
+const EXECUTE_SEED = process.env.SEED_EXECUTE === "true";
 
 const journeyTemplates: string[][] = [
     [
@@ -69,16 +82,17 @@ const categories = [
 ];
 
 const devices = ["desktop", "mobile", "tablet"];
-
 const countries = ["IN", "US", "GB", "CA", "AU"];
 
 const seedEvents = async () => {
     if (!Number.isSafeInteger(TOTAL_EVENTS) || TOTAL_EVENTS < 1) {
-        throw new Error("SEED_TOTAL_EVENTS must be a positive integer.");
+        throw new Error(
+            "SEED_TOTAL_EVENTS must be a positive integer.",
+        );
     }
 
     try {
-        const tenants = await db.tenant.findMany({
+        const tenants = await adminDb.tenant.findMany({
             select: {
                 id: true,
             },
@@ -88,11 +102,10 @@ const seedEvents = async () => {
         });
 
         if (tenants.length < 3) {
-            throw new Error("At least 3 tenants are required for seeding.");
+            throw new Error(
+                "At least 3 tenants are required for seeding.",
+            );
         }
-
-        console.log(`Found ${tenants.length} tenants.`);
-        console.log(`Target events: ${TOTAL_EVENTS.toLocaleString()}`);
 
         const endDate = new Date();
 
@@ -100,8 +113,28 @@ const seedEvents = async () => {
             endDate.getTime() - 90 * 24 * 60 * 60 * 1000,
         );
 
-        const baseCount = Math.floor(TOTAL_EVENTS / tenants.length);
+        const baseCount = Math.floor(
+            TOTAL_EVENTS / tenants.length,
+        );
+
         const remainder = TOTAL_EVENTS % tenants.length;
+
+        console.log(`Found ${tenants.length} tenants.`);
+        console.log(
+            `Target events: ${TOTAL_EVENTS.toLocaleString()}`,
+        );
+
+        if (!EXECUTE_SEED) {
+            console.log("");
+            console.log("DRY RUN MODE: No events will be inserted.");
+            console.log("To explicitly enable insertion, configure:");
+            console.log("SEED_EXECUTE=true");
+            console.log("");
+            console.log(
+                "This script does not automatically delete old seed events.",
+            );
+            return;
+        }
 
         let totalInserted = 0;
 
@@ -114,7 +147,7 @@ const seedEvents = async () => {
             );
 
             console.log(
-                `Seeding ${tenantCount.toLocaleString()} realistic events for tenant ${tenant.id}`,
+                `Seeding ${tenantCount.toLocaleString()} events for tenant ${tenant.id}`,
             );
 
             for (
@@ -136,7 +169,8 @@ const seedEvents = async () => {
                             eventIndex / EVENTS_PER_JOURNEY,
                         );
 
-                        const step = eventIndex % EVENTS_PER_JOURNEY;
+                        const step =
+                            eventIndex % EVENTS_PER_JOURNEY;
 
                         const journeyType =
                             journeyIndex % journeyTemplates.length;
@@ -155,16 +189,23 @@ const seedEvents = async () => {
                         const productNumber =
                             (journeyIndex % 1000) + 1;
 
-                        const productId = `product-${productNumber}`;
+                        const productId =
+                            `product-${productNumber}`;
 
                         const category =
-                            categories[journeyIndex % categories.length]!;
+                            categories[
+                                journeyIndex % categories.length
+                            ]!;
 
                         const deviceType =
-                            devices[journeyIndex % devices.length]!;
+                            devices[
+                                journeyIndex % devices.length
+                            ]!;
 
                         const country =
-                            countries[journeyIndex % countries.length]!;
+                            countries[
+                                journeyIndex % countries.length
+                            ]!;
 
                         const journeyProgress =
                             journeyCount > 1
@@ -182,7 +223,8 @@ const seedEvents = async () => {
                         );
 
                         const occurredAt = new Date(
-                            journeyStartedAt.getTime() + step * 30_000,
+                            journeyStartedAt.getTime() +
+                            step * 30_000,
                         );
 
                         const properties: Record<
@@ -217,6 +259,7 @@ const seedEvents = async () => {
                                 journeyIndex % 2 === 0
                                     ? "/"
                                     : "/products";
+
                             properties.referrer = "direct";
                         }
 
@@ -225,7 +268,8 @@ const seedEvents = async () => {
                         }
 
                         if (eventName === "Search Performed") {
-                            properties.searchTerm = category.toLowerCase();
+                            properties.searchTerm =
+                                category.toLowerCase();
                         }
 
                         if (
@@ -268,8 +312,10 @@ const seedEvents = async () => {
                         if (eventName === "Purchase Completed") {
                             properties.orderId =
                                 `order-${tenantIndex}-${journeyIndex}`;
+
                             properties.revenue =
                                 19.99 + (journeyIndex % 200);
+
                             properties.currency = "USD";
                         }
 
@@ -285,9 +331,25 @@ const seedEvents = async () => {
                     },
                 );
 
-                const result = await db.event.createMany({
-                    data: batch,
-                });
+                const result = await appDb.$transaction(
+                    async (tx) => {
+                        await tx.$queryRaw`
+                            SELECT set_config(
+                                'app.tenant_id',
+                                ${tenant.id},
+                                true
+                            )
+                        `;
+
+                        return tx.event.createMany({
+                            data: batch,
+                        });
+                    },
+                    {
+                        maxWait: 10000,
+                        timeout: 60000,
+                    },
+                );
 
                 totalInserted += result.count;
 
@@ -299,33 +361,20 @@ const seedEvents = async () => {
             }
         }
 
+        console.log("");
         console.log(
-            `Successfully inserted ${totalInserted.toLocaleString()} realistic events.`,
+            `Successfully inserted ${totalInserted.toLocaleString()} events.`,
         );
-
-        // Delete previous seed datasets only after the new run succeeds.
-        if (!KEEP_OLD_SEED) {
-            const deletedV2 = await db.$executeRaw`
-        DELETE FROM "Event"
-        WHERE "properties"->>'seedSource' = ${SEED_SOURCE}
-          AND "properties"->>'seedRunId' IS DISTINCT FROM ${SEED_RUN_ID}
-    `;
-
-            console.log(`Removed previous v2 seed events: ${deletedV2}`);
-
-            const deletedV1 = await db.$executeRaw`
-        DELETE FROM "Event"
-        WHERE "properties"->>'seedSource' = 'atlas-seed-v1'
-    `;
-
-            console.log(`Removed previous v1 seed events: ${deletedV1}`);
-        } else {
-            console.log("Keeping previous seed data because SEED_KEEP_OLD=true.");
-        }
-
-        console.log("Realistic event seeding completed successfully.");
+        console.log(`Seed run ID: ${SEED_RUN_ID}`);
+        console.log(
+            "Previous seed datasets were not deleted.",
+        );
     } finally {
-        await db.$disconnect();
+        await adminDb.$disconnect();
+        await appDb.$disconnect();
+
+        await adminPool.end();
+        await appPool.end();
     }
 };
 

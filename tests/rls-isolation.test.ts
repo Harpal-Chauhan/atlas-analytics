@@ -1,7 +1,7 @@
-
+﻿
 import "dotenv/config";
 import { afterAll, describe, expect, it } from "vitest";
-import { PrismaClient } from "../src/generated/prisma/client";
+import { createTestPrismaClient } from "./test-prisma";
 
 const databaseUrl = process.env.DATABASE_URL;
 const appDatabaseUrl = process.env.APP_DATABASE_URL;
@@ -12,13 +12,9 @@ if (!databaseUrl || !appDatabaseUrl) {
     );
 }
 
-const adminDb = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-});
+const adminDb = createTestPrismaClient(databaseUrl);
 
-const appDb = new PrismaClient({
-    datasources: { db: { url: appDatabaseUrl } },
-});
+const appDb = createTestPrismaClient(appDatabaseUrl);
 
 afterAll(async () => {
     await appDb.$disconnect();
@@ -35,7 +31,7 @@ describe("PostgreSQL tenant isolation", () => {
             }>
         >`
             SELECT
-                current_user AS "roleName",
+                current_user::text AS "roleName",
                 rolbypassrls AS "bypassRls",
                 rolsuper AS "isSuperuser"
             FROM pg_roles

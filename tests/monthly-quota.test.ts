@@ -1,7 +1,7 @@
-
+﻿
 import "dotenv/config";
 import { afterAll, describe, expect, it } from "vitest";
-import { PrismaClient } from "../src/generated/prisma/client";
+import { createTestPrismaClient } from "./test-prisma";
 import { consumeMonthlyQuota } from "../src/lib/monthly-quota";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -13,13 +13,9 @@ if (!databaseUrl || !appDatabaseUrl) {
     );
 }
 
-const adminDb = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-});
+const adminDb = createTestPrismaClient(databaseUrl);
 
-const appDb = new PrismaClient({
-    datasources: { db: { url: appDatabaseUrl } },
-});
+const appDb = createTestPrismaClient(appDatabaseUrl);
 
 const createTestTenant = async (quota: number) => {
     const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -37,13 +33,19 @@ const consumeForTenant = async (
     tenantId: string,
     eventCount: number,
 ) => {
-    return appDb.$transaction(async (tx) => {
-        await tx.$queryRaw`
-            SELECT set_config('app.tenant_id', ${tenantId}, true)
-        `;
+    return appDb.$transaction(
+        async (tx) => {
+            await tx.$queryRaw`
+                SELECT set_config('app.tenant_id', ${tenantId}, true)
+            `;
 
-        return consumeMonthlyQuota(tx, tenantId, eventCount);
-    });
+            return consumeMonthlyQuota(tx, tenantId, eventCount);
+        },
+        {
+            maxWait: 15000,
+            timeout: 45000,
+        },
+    );
 };
 
 const cleanupTenant = async (tenantId: string) => {

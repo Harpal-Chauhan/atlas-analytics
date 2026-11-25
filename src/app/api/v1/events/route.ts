@@ -119,11 +119,11 @@ export const POST = async (request: Request) => {
         const storedKey = await prisma.$transaction(async (tx) => {
             await tx.$queryRaw`
         SELECT set_config(
-          'app.api_key_hash',
-          ${lookupHash},
-          true
+            'app.api_key_hash',
+            ${lookupHash},
+            true
         )
-      `;
+    `;
 
             return tx.apiKey.findUnique({
                 where: { keyLookupHash: lookupHash },
@@ -133,6 +133,9 @@ export const POST = async (request: Request) => {
                     keyHash: true,
                 },
             });
+        }, {
+            maxWait: 10000,
+            timeout: 30000,
         });
 
         if (!storedKey) {
@@ -349,6 +352,10 @@ export const POST = async (request: Request) => {
                     },
                     headers: {},
                 };
+            },
+            {
+                maxWait: 10000,
+                timeout: 60000,
             },
         );
 

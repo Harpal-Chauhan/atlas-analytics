@@ -1,4 +1,4 @@
-
+﻿
 import "dotenv/config";
 import {
     afterAll,
@@ -9,7 +9,7 @@ import {
     vi,
 } from "vitest";
 import { randomUUID } from "node:crypto";
-import { PrismaClient } from "../src/generated/prisma/client";
+import { createTestPrismaClient } from "./test-prisma";
 
 const authMock = vi.hoisted(() => vi.fn());
 
@@ -28,9 +28,7 @@ if (!databaseUrl || !appDatabaseUrl) {
     );
 }
 
-const adminDb = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-});
+const adminDb = createTestPrismaClient(databaseUrl);
 
 type TestContext = {
     userId: string;

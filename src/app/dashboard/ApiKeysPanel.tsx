@@ -60,6 +60,9 @@ const ApiKeysPanel = () => {
       setNewKey("");
       setMessage("");
       void loadKeys();
+    } else if (status === "unauthenticated") {
+      setKeys([]);
+      setLoading(false);
     }
   }, [status, activeTenantId, loadKeys]);
 
@@ -74,7 +77,9 @@ const ApiKeysPanel = () => {
     try {
       const response = await fetch("/api/api-keys", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ name }),
       });
 
@@ -86,7 +91,7 @@ const ApiKeysPanel = () => {
 
       setNewKey(data.apiKey);
       setName("");
-      setMessage("API key created. Copy and save it now.");
+      setMessage("API key created successfully. Copy and save it now.");
 
       await loadKeys();
     } catch (err) {
@@ -136,119 +141,342 @@ const ApiKeysPanel = () => {
     try {
       await navigator.clipboard.writeText(newKey);
       setMessage("API key copied to clipboard.");
+      setError("");
     } catch {
       setError("Automatic copy failed. Select and copy the key manually.");
     }
   };
 
   return (
-    <section className="mt-6 rounded-xl border border-gray-200 bg-white p-6">
-      <h2 className="text-lg font-semibold">API Keys</h2>
+    <section className="min-w-0 space-y-6">
+      {/* HEADER */}
 
-      <p className="mt-1 text-sm text-gray-600">
-        Create and manage API keys for sending events to ATLAS.
-      </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#E5F2E9] text-[#176C52]">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="15" r="4" />
+              <path d="m10.85 12.15 8.65-8.65 2 2-2 2-2-2-2 2 2 2-3.8 3.8" />
+            </svg>
+          </div>
 
-      <form
-        onSubmit={createKey}
-        className="mt-5 flex flex-col gap-3 sm:flex-row"
-      >
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          minLength={2}
-          maxLength={100}
-          required
-          placeholder="API key name"
-          aria-label="API key name"
-          className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-gray-500"
-        />
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold text-[#142B27]">API Keys</h2>
 
-        <button
-          type="submit"
-          disabled={busy || !activeTenantId}
-          className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
-        >
-          {busy ? "Please wait..." : "Create API key"}
-        </button>
-      </form>
+            <p className="mt-1 text-sm leading-6 text-[#718078]">
+              Create and manage API credentials for sending events to ATLAS.
+            </p>
+          </div>
+        </div>
 
-      {error && (
-        <p role="alert" className="mt-4 text-sm text-red-600">
-          {error}
-        </p>
-      )}
+        <span className="w-fit rounded-full border border-[#D5E8D8] bg-[#F1F8EF] px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#176C52]">
+          Developer Tools
+        </span>
+      </div>
 
-      {message && (
-        <p role="status" className="mt-4 text-sm text-gray-700">
-          {message}
-        </p>
-      )}
+      {/* CREATE API KEY */}
 
-      {newKey && (
-        <div className="mt-4 rounded-lg border border-gray-300 bg-gray-50 p-4">
-          <p className="text-sm font-medium">Your new API key</p>
+      <div className="rounded-2xl border border-[#DCE8DD] bg-[#F8FAF4] p-4 sm:p-5">
+        <div className="mb-4">
+          <h3 className="text-sm font-bold text-[#142B27]">
+            Generate New API Key
+          </h3>
 
-          <p className="mt-2 break-all rounded-md bg-white p-3 font-mono text-sm">
-            {newKey}
+          <p className="mt-1 text-xs leading-5 text-[#829087]">
+            Give your API key a recognizable name so you can identify it later.
           </p>
+        </div>
+
+        <form
+          onSubmit={createKey}
+          className="flex min-w-0 flex-col gap-3 sm:flex-row"
+        >
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            minLength={2}
+            maxLength={100}
+            required
+            placeholder="e.g. Production Website"
+            aria-label="API key name"
+            disabled={busy || !activeTenantId}
+            className="min-w-0 flex-1 rounded-xl border border-[#D5E1D5] bg-white px-4 py-3 text-sm text-[#263B32] outline-none transition placeholder:text-[#A0ACA2] focus:border-[#20B58A] focus:ring-2 focus:ring-[#20B58A]/15 disabled:cursor-not-allowed disabled:bg-[#F0F3ED]"
+          />
 
           <button
-            type="button"
-            onClick={copyKey}
-            className="mt-3 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium hover:bg-gray-100"
+            type="submit"
+            disabled={busy || !activeTenantId}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#176C52] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#12563F] disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Copy API key
+            {busy ? (
+              <>
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                Please wait...
+              </>
+            ) : (
+              <>
+                <span className="text-lg leading-none">+</span>
+                Create API Key
+              </>
+            )}
           </button>
+        </form>
 
-          <p className="mt-2 text-xs text-gray-600">
-            Save this key securely. It will not be shown again.
+        {!activeTenantId && (
+          <p className="mt-3 text-xs text-[#A36D60]">
+            Select an active organization before creating an API key.
+          </p>
+        )}
+      </div>
+
+      {/* ERROR MESSAGE */}
+
+      {error && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-xl border border-[#F4D8D0] bg-[#FFF7F3] p-4"
+        >
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#FFE8DF] text-sm font-bold text-[#B85D46]">
+            !
+          </span>
+
+          <p className="break-words text-sm leading-6 text-[#A34F3B]">
+            {error}
           </p>
         </div>
       )}
 
-      <div className="mt-6">
-        <h3 className="font-medium">Existing keys</h3>
+      {/* SUCCESS MESSAGE */}
+
+      {message && (
+        <div
+          role="status"
+          className="flex items-start gap-3 rounded-xl border border-[#CDE8D5] bg-[#F1FAF3] p-4"
+        >
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#DDF2E2] text-sm font-bold text-[#176C52]">
+            ✓
+          </span>
+
+          <p className="break-words text-sm leading-6 text-[#176C52]">
+            {message}
+          </p>
+        </div>
+      )}
+
+      {/* NEW API KEY DISPLAY */}
+
+      {newKey && (
+        <div className="overflow-hidden rounded-2xl border border-[#CDE8D5] bg-white">
+          <div className="flex items-center gap-3 border-b border-[#E2EEE3] bg-[#F1FAF3] p-4">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#DDF2E2] text-[#176C52]">
+              ✓
+            </div>
+
+            <div>
+              <h3 className="text-sm font-bold text-[#176C52]">
+                Your New API Key
+              </h3>
+
+              <p className="mt-1 text-xs text-[#718078]">
+                Your credential is ready.
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-3 p-4 sm:p-5">
+            <div className="overflow-hidden rounded-xl border border-[#DCE8DD] bg-[#F8FAF4] p-3 sm:p-4">
+              <p className="break-all font-mono text-xs leading-6 text-[#263B32] sm:text-sm">
+                {newKey}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={copyKey}
+              className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#176C52] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#12563F] sm:w-auto"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="17"
+                height="17"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="8" y="8" width="13" height="13" rx="2" />
+                <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
+              </svg>
+              Copy API Key
+            </button>
+
+            <p className="text-xs leading-5 text-[#829087]">
+              Security reminder: Save this key securely. It will not be shown
+              again after you leave this screen.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* EXISTING API KEYS */}
+
+      <div className="space-y-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-base font-bold text-[#142B27]">
+              Existing API Keys
+            </h3>
+
+            <p className="mt-1 text-xs text-[#829087]">
+              M{"anage your organization's API credentials."}
+            </p>
+          </div>
+
+          {!loading && (
+            <span className="w-fit rounded-full border border-[#DCE8DD] bg-[#F8FAF4] px-3 py-1 text-xs font-semibold text-[#176C52]">
+              {keys.length} {keys.length === 1 ? "Key" : "Keys"}
+            </span>
+          )}
+        </div>
+
+        {/* LOADING */}
 
         {loading ? (
-          <p className="mt-3 text-sm text-gray-600">Loading API keys...</p>
+          <div className="space-y-3" aria-label="Loading API keys">
+            {Array.from({ length: 2 }).map((_, index) => (
+              <div
+                key={index}
+                className="animate-pulse rounded-xl border border-[#DCE8DD] bg-white p-4 sm:p-5"
+              >
+                <div className="h-4 w-40 rounded bg-[#E8EEE7]" />
+                <div className="mt-4 h-3 w-56 max-w-full rounded bg-[#F0F3ED]" />
+                <div className="mt-3 h-3 w-44 max-w-full rounded bg-[#F0F3ED]" />
+              </div>
+            ))}
+          </div>
         ) : keys.length === 0 ? (
-          <p className="mt-3 text-sm text-gray-600">No API keys created yet.</p>
+          /* EMPTY STATE */
+
+          <div className="rounded-2xl border border-dashed border-[#D5E1D5] bg-[#FAFBF7] px-4 py-10 text-center sm:py-12">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[#EAF3E9] text-xl text-[#176C52]">
+              ⌘
+            </div>
+
+            <h4 className="mt-4 text-sm font-bold text-[#142B27]">
+              No API Keys Yet
+            </h4>
+
+            <p className="mx-auto mt-2 max-w-sm text-xs leading-5 text-[#829087]">
+              Create your first API key to connect your application and start
+              sending events to ATLAS.
+            </p>
+          </div>
         ) : (
-          <div className="mt-3 space-y-3">
+          /* API KEY LIST */
+
+          <div className="space-y-3">
             {keys.map((key) => (
               <div
                 key={key.id}
-                className="flex flex-col gap-3 rounded-lg border border-gray-200 p-4 sm:flex-row sm:items-center sm:justify-between"
+                className="flex min-w-0 flex-col gap-4 rounded-xl border border-[#E3EBE2] bg-white p-4 transition hover:border-[#B9DCC7] hover:bg-[#FCFDF9] sm:p-5"
               >
-                <div className="min-w-0">
-                  <p className="break-words font-medium">{key.name}</p>
+                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#EAF3E9] text-[#176C52]">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="19"
+                        height="19"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <circle cx="8" cy="15" r="4" />
+                        <path d="m10.85 12.15 8.65-8.65" />
+                      </svg>
+                    </div>
 
-                  <p className="mt-1 text-xs text-gray-500">
-                    Created: {new Date(key.createdAt).toLocaleString()}
-                  </p>
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-bold text-[#263B32]">
+                        {key.name}
+                      </p>
 
-                  <p className="mt-1 text-xs text-gray-500">
-                    Last used:{" "}
-                    {key.lastUsedAt
-                      ? new Date(key.lastUsedAt).toLocaleString()
-                      : "Never"}
-                  </p>
+                      <p className="mt-1 break-all text-[10px] text-[#A0ACA2]">
+                        ID: {key.id}
+                      </p>
+                    </div>
+                  </div>
 
-                  <p className="mt-1 text-xs text-gray-600">
-                    Status: {key.revokedAt ? "Revoked" : "Active"}
-                  </p>
+                  {/* STATUS */}
+
+                  <span
+                    className={`w-fit shrink-0 rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider ${
+                      key.revokedAt
+                        ? "border border-[#F4D8D0] bg-[#FFF7F3] text-[#B85D46]"
+                        : "border border-[#CDE8D5] bg-[#F1FAF3] text-[#176C52]"
+                    }`}
+                  >
+                    {key.revokedAt ? "Revoked" : "Active"}
+                  </span>
                 </div>
 
+                {/* METADATA */}
+
+                <div className="grid grid-cols-1 gap-3 border-t border-[#EDF1EB] pt-3 sm:grid-cols-2">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-[#A0ACA2]">
+                      Created
+                    </p>
+
+                    <p className="mt-1 break-words text-xs font-medium text-[#52645A]">
+                      {new Date(key.createdAt).toLocaleString()}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-[#A0ACA2]">
+                      Last Used
+                    </p>
+
+                    <p className="mt-1 break-words text-xs font-medium text-[#52645A]">
+                      {key.lastUsedAt
+                        ? new Date(key.lastUsedAt).toLocaleString()
+                        : "Never"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* ACTION */}
+
                 {!key.revokedAt && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void revokeKey(key.id)}
-                    className="self-start rounded-md border border-gray-300 px-3 py-2 text-sm font-medium hover:bg-gray-100 disabled:opacity-50 sm:self-center"
-                  >
-                    Revoke
-                  </button>
+                  <div className="flex justify-start border-t border-[#EDF1EB] pt-3 sm:justify-end">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void revokeKey(key.id)}
+                      className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[#F0D7D0] bg-white px-4 py-2 text-xs font-semibold text-[#B85D46] transition hover:bg-[#FFF3EE] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busy ? "Please wait..." : "Revoke API Key"}
+                    </button>
+                  </div>
                 )}
               </div>
             ))}
