@@ -19,12 +19,12 @@ type DashboardShellProps = {
 
 const navItems = [
   { label: "Overview", href: "#overview", number: "01" },
-  { label: "Developer Settings", href: "#api-keys", number: "02" },
-  { label: "Analytics", href: "#analytics", number: "03" },
-  { label: "Key Performance", href: "#key-performance", number: "04" },
+  { label: "Organizations", href: "#organizations", number: "02" },
+  { label: "Developer Settings", href: "#api-keys", number: "03" },
+  { label: "Analytics", href: "#analytics", number: "04" },
 ];
 
-const sectionIds = ["overview", "organizations", "api-keys", "analytics"];
+const sectionIds = navItems.map((item) => item.href.slice(1));
 
 export default function DashboardShell({
   userName,
@@ -39,7 +39,6 @@ export default function DashboardShell({
   const ticking = useRef(false);
 
   const updateActiveSection = useCallback(() => {
-    // Keep the clicked destination active until smooth scrolling ends.
     if (pendingNavigation.current) return;
 
     const activationPoint = 150;
@@ -48,6 +47,7 @@ export default function DashboardShell({
 
     for (const id of sectionIds) {
       const section = document.getElementById(id);
+
       if (!section) continue;
 
       const top = section.getBoundingClientRect().top;
@@ -70,18 +70,14 @@ export default function DashboardShell({
   }, []);
 
   useEffect(() => {
-    const handleScroll = () => {
-      if (ticking.current) return;
-
-      ticking.current = true;
-
-      window.requestAnimationFrame(() => {
-        updateActiveSection();
-        ticking.current = false;
-      });
-    };
+    let scrollEndTimer: ReturnType<typeof setTimeout> | undefined;
 
     const handleScrollEnd = () => {
+      if (scrollEndTimer) {
+        clearTimeout(scrollEndTimer);
+        scrollEndTimer = undefined;
+      }
+
       const destination = pendingNavigation.current;
       pendingNavigation.current = null;
 
@@ -92,11 +88,32 @@ export default function DashboardShell({
       }
     };
 
-    const handleManualScroll = () => {
-      if (!pendingNavigation.current) return;
+    const handleScroll = () => {
+      if (!ticking.current) {
+        ticking.current = true;
 
-      pendingNavigation.current = null;
-      updateActiveSection();
+        window.requestAnimationFrame(() => {
+          if (!pendingNavigation.current) {
+            updateActiveSection();
+          }
+
+          ticking.current = false;
+        });
+      }
+
+      // Fallback for browsers without scrollend support.
+      if (scrollEndTimer) {
+        clearTimeout(scrollEndTimer);
+      }
+
+      scrollEndTimer = setTimeout(handleScrollEnd, 180);
+    };
+
+    const handleManualScroll = () => {
+      if (pendingNavigation.current) {
+        pendingNavigation.current = null;
+        updateActiveSection();
+      }
     };
 
     window.addEventListener("scroll", handleScroll, {
@@ -104,7 +121,7 @@ export default function DashboardShell({
     });
 
     window.addEventListener("scrollend", handleScrollEnd);
-    window.addEventListener("resize", handleScroll);
+    window.addEventListener("resize", updateActiveSection);
 
     window.addEventListener("wheel", handleManualScroll, {
       passive: true,
@@ -114,19 +131,18 @@ export default function DashboardShell({
       passive: true,
     });
 
-    window.addEventListener("pointerdown", handleManualScroll, {
-      passive: true,
-    });
-
     updateActiveSection();
 
     return () => {
+      if (scrollEndTimer) {
+        clearTimeout(scrollEndTimer);
+      }
+
       window.removeEventListener("scroll", handleScroll);
       window.removeEventListener("scrollend", handleScrollEnd);
-      window.removeEventListener("resize", handleScroll);
+      window.removeEventListener("resize", updateActiveSection);
       window.removeEventListener("wheel", handleManualScroll);
       window.removeEventListener("touchstart", handleManualScroll);
-      window.removeEventListener("pointerdown", handleManualScroll);
     };
   }, [updateActiveSection]);
 
@@ -140,6 +156,21 @@ export default function DashboardShell({
     const target = document.getElementById(targetId);
 
     if (!target) return;
+
+    if (targetId === "overview") {
+      pendingNavigation.current = href;
+      setActiveSection(href);
+      setSidebarOpen(false);
+
+      window.history.replaceState(null, "", href);
+
+      window.scrollTo({
+        top: 0,
+        behavior: "smooth",
+      });
+
+      return;
+    }
 
     pendingNavigation.current = href;
     setActiveSection(href);
@@ -208,7 +239,7 @@ export default function DashboardShell({
             Workspace
           </p>
 
-          <nav className="space-y-2">
+          <nav className="space-y-2" aria-label="Dashboard navigation">
             {navItems.map((item) => {
               const isActive = activeSection === item.href;
 
